@@ -9,11 +9,27 @@ No hace falta tu PC ni tu teléfono. Lanzas el workflow y trabaja en la nube.
 ## Qué hay
 
 ```
-mt5-ea/EstrategiaAdversaria.mq5      el EA (MQL5, se compila en el runner)
-.github/workflows/mt5-adversario.yml instala MT5, compila, arranca y vigila
+mt5-ea/EstrategiaAdversaria.mq5          el EA (MQL5, se compila en el runner)
+mt5-ea/scripts/instalar_mt5.ps1          instala el terminal y compila
+mt5-ea/scripts/ejecutar_ea.ps1           configura la cuenta, arranca y vigila
+.github/workflows/mt5-adversario.yml     llama a los dos scripts
 ```
 
-Nada más. No hay dependencias, ni Node, ni Python.
+Toda la lógica está en los scripts: el workflow solo los ejecuta. No hay
+dependencias, ni Node, ni Python.
+
+## Cómo sale el mensaje
+
+Dos capas, para que una señal no se pierda nunca:
+
+1. **El EA envía** con `WebRequest` a `api.telegram.org`.
+2. Si MetaTrader bloquea la salida (`http=-1 error=4014`, la URL no está en su
+   lista blanca y en modo headless no hay forma fiable de meterla), el EA deja
+   el mensaje en `MQL5/Files/adv_pendientes.txt` y `ejecutar_ea.ps1` lo entrega
+   con `Invoke-RestMethod` al mismo bot y mismo chat. El log del run muestra
+   `Telegram ok: msg <id> -> chat <id>`.
+
+El texto que llega es el mismo en los dos caminos, y el antiduplicado no cambia.
 
 ## Qué calcula
 
@@ -69,6 +85,7 @@ El run imprime el log del terminal a los 2 minutos si el EA no escribió nada.
 | `invalid account` / `authorization failed` | servidor mal escrito o demo caducada | copiar el servidor exacto |
 | el EA no arranca, no abre el gráfico | el primer símbolo de `MT5_SYMBOLS` no existe en el bróker | poner uno que sí exista como primero |
 | `Telegram sin configurar` / `FALLO http=400` | token o chat mal | grupo = id negativo; el bot debe estar dentro |
+| `FALLO http=-1 error=4014` | MT5 no deja salir a `WebRequest` | no es un fallo: el script entrega el mensaje; mira `Telegram ok: msg …` en el log |
 
 ## Límites
 
