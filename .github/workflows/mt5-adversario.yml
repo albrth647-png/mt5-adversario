@@ -174,9 +174,11 @@ jobs:
           Set-Content -Path "$env:MT5_DIR\adv.ini" -Value $ini -Encoding ASCII
           # MT5 guarda la lista blanca de WebRequest en su propio common.ini:
           # se escribe tambien ahi (modo portable) con las dos formas del host.
+          # La lista blanca de WebRequest NO se aplica desde un config alternativo
+          # (/config), asi que la configuracion completa va al common.ini del modo
+          # portable y el terminal arranca sin /config. MT5 lo escribe en UTF-16.
           New-Item -ItemType Directory -Force -Path "$env:MT5_DIR\config" | Out-Null
-          $comun = @('[Experts]', 'WebRequest=1', 'WebRequestUrl=api.telegram.org,https://api.telegram.org') -join "`r`n"
-          Set-Content -Path "$env:MT5_DIR\config\common.ini" -Value $comun -Encoding ASCII
+          Set-Content -Path "$env:MT5_DIR\config\common.ini" -Value $ini -Encoding Unicode
           Write-Host "Simbolos: $sims | TF: $tf | simbolo del grafico: $primero"
 
       - name: Arrancar el terminal y dejar el EA trabajando
@@ -186,8 +188,10 @@ jobs:
         run: |
           $min = [int]$env:MIN
           if ($min -gt 330) { $min = 330 }
+          Write-Host '--- [Experts] del common.ini ---'
+          (Get-Content "$env:MT5_DIR\config\common.ini" | Select-String 'WebRequest')
           $p = Start-Process -FilePath "$env:MT5_DIR\terminal64.exe" `
-               -ArgumentList '/portable', "/config:`"$env:MT5_DIR\adv.ini`"" -PassThru
+               -ArgumentList '/portable' -PassThru
           Write-Host "terminal64 pid=$($p.Id) durante $min min"
           $log = "$env:MT5_DIR\MQL5\Files\adv.log"
           for ($i = 1; $i -le $min; $i++) {
