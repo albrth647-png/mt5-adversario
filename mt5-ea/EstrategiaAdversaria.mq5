@@ -637,7 +637,9 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       if(s.nT >= 2 && s.avisados != s.nT)
         {
          s.avisados = s.nT;
-         Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c, extremo, nivel,
+         // Precio de entrada = extremo del toque (mecha), no el cierre: la senal
+         // sale mas cerca del nivel real del toque y no arrastra el cierre posterior.
+         Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), extremo, extremo, nivel,
                 E30, E50, E100);
          s.ultimaEntrada = i;
         }
