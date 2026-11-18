@@ -24,6 +24,10 @@ on:
         description: "Temporalidad a escanear (M1 / M5 / M15)"
         default: "M5"
         required: true
+      servidor:
+        description: "Servidor MT5 (vacio = usar el secret MT5_SERVER)"
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -129,7 +133,7 @@ jobs:
         env:
           MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
           MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
-          MT5_SERVER: ${{ secrets.MT5_SERVER }}
+          MT5_SERVER: ${{ github.event.inputs.servidor || secrets.MT5_SERVER }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
           MT5_SYMBOLS: ${{ vars.MT5_SYMBOLS }}
