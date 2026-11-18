@@ -146,7 +146,7 @@ function Enviar-Pendientes {
           }
         } catch { }
         Write-Warning "intento $($r+1) fallo para $($f.Name): $detalle"
-        Start-Sleep -Seconds 2
+        if ($detalle -match '429') { Start-Sleep -Seconds 5 } else { Start-Sleep -Seconds 2 }
       }
     }
     if ($ok) {
@@ -154,6 +154,7 @@ function Enviar-Pendientes {
       $destino = if ($resp.result.chat.username) { '@' + $resp.result.chat.username } else { $resp.result.chat.title }
       Write-Host "Telegram ok: msg $($resp.result.message_id) -> chat $($resp.result.chat.id) ($destino)"
       $entregados++
+      Start-Sleep -Seconds 1
     } else {
       Write-Warning "NO se pudo entregar $($f.Name); se reintenta en el siguiente ciclo"
     }
