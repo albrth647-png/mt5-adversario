@@ -25,6 +25,7 @@ string g_simbolos  = "FX Vol 20,FX Vol 40,SFX Vol 20,SFX Vol 40";
 string g_tfTxt     = "M5";
 int    g_velas     = 3000;
 int    g_latidoMin = 15;
+int    g_enviarPrecios = 0;   // 1 = enviar snapshot de precios a Telegram en cada latido
 
 ENUM_TIMEFRAMES g_tf = PERIOD_M5;
 
@@ -358,6 +359,8 @@ bool CargarCfg(const string archivo)
          g_velas = (int)StringToInteger(v);
       else if(k == "latido")
          g_latidoMin = (int)StringToInteger(v);
+      else if(k == "precios")
+         g_enviarPrecios = (int)StringToInteger(v);
      }
    FileClose(h);
    g_tf = TfDeTexto(g_tfTxt);
@@ -958,12 +961,25 @@ int OnInit()
    long offServidor = (long)TimeTradeServer() - (long)TimeGMT();
    Log("Desfase del servidor respecto a UTC: " + IntegerToString((int)(offServidor / 3600)) + " h");
 
+   // Snapshot de precios al arrancar (para verificar que los activos coinciden con MT5)
+   string snap = "Precios al arrancar:";
+   for(int i=0; i<ArraySize(g_est); i++)
+     {
+      if(StringLen(g_est[i].nombre) == 0)
+         continue;
+      MqlRates r[];
+      int m = CopyRates(g_est[i].nombre, g_tf, 0, 2, r);
+      string precio = (m > 0) ? FmtPrecio(r[m-1].close) : "sin datos";
+      snap = snap + "\n  " + g_est[i].nombre + " = " + precio;
+     }
+
    string msg = "EA ADVERSARIO ARRANCADO";
    msg = msg + "\n" + "Cuenta: " + IntegerToString(login) + " - " + servidor + " (" + modoTxt + ")";
    msg = msg + "\n" + "Activos: " + (StringLen(listaOk) ? listaOk : "(ninguno resuelto)");
    msg = msg + "\n" + "Temporalidad: " + g_tfTxt;
    msg = msg + "\n" + "Horario del servidor: UTC" + (offServidor >= 0 ? "+" : "")
          + IntegerToString((int)(offServidor / 3600));
+   msg = msg + "\n" + snap;
    EnviarTelegram(msg);
 
    EventSetTimer(10);
@@ -1007,6 +1023,8 @@ void OnTimer()
             + "(senales " + IntegerToString(g_est[i].senales) + ")";
      }
    Log(txt);
+   if(g_enviarPrecios == 1 && g_tgToken != "" && g_tgChat != "")
+      EnviarTelegram(txt);
   }
 
 //====================================================================

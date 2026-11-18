@@ -37,6 +37,7 @@ $logEa   = Join-Path $files 'adv.log'
 New-Item -ItemType Directory -Force -Path $files | Out-Null
 
 # ------------------------------------------------------- configuracion del EA
+$precios = if ($env:MT5_PRECIOS) { $env:MT5_PRECIOS } else { '1' }
 $cfg = @(
   "token=$token"
   "chat=$chat"
@@ -44,6 +45,7 @@ $cfg = @(
   "tf=$Tf"
   "velas=3000"
   "latido=15"
+  "precios=$precios"
 ) -join "`r`n"
 Set-Content -Path (Join-Path $files 'adv.cfg') -Value $cfg -Encoding ASCII
 
