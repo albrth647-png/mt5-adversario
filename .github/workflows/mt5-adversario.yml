@@ -8,6 +8,9 @@ name: MT5 adversario (demo -> Telegram)
 #   instalar_mt5.ps1   instala el terminal y compila el EA
 #   ejecutar_ea.ps1    configura cuenta/Telegram, arranca y vigila
 #
+# El EA procesa M3, M5, M15 y M30 en un solo terminal (multi-TF).
+# La tendencia mayor se calcula en H1.
+#
 # Secrets (Settings > Secrets and variables > Actions):
 #   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, TELEGRAM_TOKEN, TELEGRAM_CHAT
 # Variable opcional: MT5_SYMBOLS
@@ -18,7 +21,7 @@ on:
     inputs:
       minutos:
         description: "Minutos que queda abierto el terminal (max 330)"
-        default: "240"
+        default: "60"
         required: true
       servidor:
         description: "Servidor MT5 (vacio = usar el secret MT5_SERVER)"
@@ -28,21 +31,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: mt5-adversario
+  cancel-in-progress: false
+
 env:
   MT5_DIR: C:\Program Files\MetaTrader 5
 
 jobs:
   ea:
-    name: ea-${{ matrix.tf }}
+    name: ea
     runs-on: windows-latest
     timeout-minutes: 350
-    concurrency:
-      group: mt5-adversario-${{ matrix.tf }}
-      cancel-in-progress: false
-    strategy:
-      fail-fast: false
-      matrix:
-        tf: [M3, M5, M15]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,7 +83,7 @@ jobs:
           MT5_SYMBOLS: ${{ vars.MT5_SYMBOLS }}
           S_OVR: ${{ inputs.servidor }}
           MIN: ${{ inputs.minutos }}
-          TF_IN: ${{ matrix.tf }}
+          TF_IN: M5
         run: |
           if ($env:S_OVR) { $env:MT5_SERVER = $env:S_OVR; Write-Host "servidor de prueba: $env:S_OVR" }
           ./mt5-ea/scripts/ejecutar_ea.ps1 -Minutos ([int]$env:MIN) -Tf $env:TF_IN
@@ -96,7 +96,7 @@ jobs:
           if (Test-Path $log) {
             $sen = Select-String -Path $log -Pattern '\[SENAL\]'
             $out = "Lineas de senal: " + $sen.Count + "`n"
-            $out += ($sen | Select-Object -Last 15 | ForEach-Object { $_.Line }) -join "`n"
+            $out += ($sen | Select-Object -Last 20 | ForEach-Object { $_.Line }) -join "`n"
           } else {
             $out = 'No hay adv.log'
           }
@@ -107,7 +107,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mt5-adversario-logs-${{ matrix.tf }}
+          name: mt5-adversario-logs
           path: |
             C:\Program Files\MetaTrader 5\MQL5\Files\*.log
             C:\Program Files\MetaTrader 5\MQL5\Files\*.txt

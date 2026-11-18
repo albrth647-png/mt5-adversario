@@ -27,7 +27,11 @@ int    g_velas     = 3000;
 int    g_latidoMin = 15;
 int    g_enviarPrecios = 0;   // 1 = enviar snapshot de precios a Telegram en cada latido
 
-ENUM_TIMEFRAMES g_tf = PERIOD_M5;
+// Multi-TF: el EA procesa estas 4 temporalidades en un solo terminal
+string           g_tfTxtArr[];
+ENUM_TIMEFRAMES  g_tfArr[];
+int              g_nTf      = 4;
+ENUM_TIMEFRAMES  g_tf      = PERIOD_M5;
 
 //--------------------------------------------------------------------
 //  Parametros de la escalera: copiados de PARAMS en nucleo.js
@@ -821,8 +825,8 @@ void CargarEnviadas()
 struct EstadoSim
   {
    string   nombre;
-   datetime ultimaBarra;
-   int      senales;
+   datetime ultimaBarra[4];   // por cada TF (M3,M5,M15,M30)
+   int      senales[4];       // por cada TF
    bool     avisado;
   };
 
@@ -832,83 +836,90 @@ void Revisar(const int idx)
   {
    if(StringLen(g_est[idx].nombre) == 0)
       return;
-   MqlRates r[];
-   int n = CopyRates(g_est[idx].nombre, g_tf, 1, g_velas, r);
-   if(n < P_emaFondo + 30)
+
+   for(int tfi = 0; tfi < g_nTf; tfi++)
      {
-      if(!g_est[idx].avisado)
+      g_tf    = g_tfArr[tfi];
+      g_tfTxt = g_tfTxtArr[tfi];
+
+      MqlRates r[];
+      int n = CopyRates(g_est[idx].nombre, g_tf, 1, g_velas, r);
+      if(n < P_emaFondo + 30)
         {
-         Log(g_est[idx].nombre + ": solo " + IntegerToString(n) + " velas " + g_tfTxt
-             + " (necesito " + IntegerToString(P_emaFondo + 30) + "). Espero.");
-         g_est[idx].avisado = true;
+         if(!g_est[idx].avisado)
+           {
+            Log(g_est[idx].nombre + ": solo " + IntegerToString(n) + " velas " + g_tfTxt
+                + " (necesito " + IntegerToString(P_emaFondo + 30) + "). Espero.");
+            g_est[idx].avisado = true;
+           }
+         continue;
         }
-      return;
-     }
-   g_est[idx].avisado = false;
-   datetime ultima = r[n-1].time;
-   if(ultima == g_est[idx].ultimaBarra)
-      return;
-   g_est[idx].ultimaBarra = ultima;
+      g_est[idx].avisado = false;
+      datetime ultima = r[n-1].time;
+      if(ultima == g_est[idx].ultimaBarra[tfi])
+         continue;
+      g_est[idx].ultimaBarra[tfi] = ultima;
 
-   Evento evs[], evsE[];
-   Escanear(r, evs);
-   EscanearEstructura(r, evsE);
+      Evento evs[], evsE[];
+      Escanear(r, evs);
+      EscanearEstructura(r, evsE);
 
-   // candidatos de la vela recien cerrada, de las dos estrategias
-   Evento cand[];
-   ArrayResize(cand, 0);
-   int t1 = ArraySize(evs);
-   for(int i=0; i<t1; i++)
-      if(evs[i].bar == n - 1)
+      // candidatos de la vela recien cerrada, de las dos estrategias
+      Evento cand[];
+      ArrayResize(cand, 0);
+      int t1 = ArraySize(evs);
+      for(int i=0; i<t1; i++)
+         if(evs[i].bar == n - 1)
+           {
+            int k = ArraySize(cand);
+            ArrayResize(cand, k + 1);
+            cand[k] = evs[i];
+           }
+      int t2 = ArraySize(evsE);
+      for(int i=0; i<t2; i++)
+         if(evsE[i].bar == n - 1)
+           {
+            int k = ArraySize(cand);
+            ArrayResize(cand, k + 1);
+            cand[k] = evsE[i];
+           }
+
+      long offServidor = (long)TimeTradeServer() - (long)TimeGMT();
+      datetime tVelaUTC = (datetime)((long)ultima - offServidor);
+      datetime tCierre  = (datetime)((long)ultima + (long)PeriodSeconds(g_tf));
+
+      // una sola senal por vela y lado: gana la de mayor prioridad
+      for(int lado = 0; lado < 2; lado++)
         {
-         int k = ArraySize(cand);
-         ArrayResize(cand, k + 1);
-         cand[k] = evs[i];
-        }
-   int t2 = ArraySize(evsE);
-   for(int i=0; i<t2; i++)
-      if(evsE[i].bar == n - 1)
-        {
-         int k = ArraySize(cand);
-         ArrayResize(cand, k + 1);
-         cand[k] = evsE[i];
-        }
-
-   long offServidor = (long)TimeTradeServer() - (long)TimeGMT();
-   datetime tVelaUTC = (datetime)((long)ultima - offServidor);
-   datetime tCierre  = (datetime)((long)ultima + (long)PeriodSeconds(g_tf));
-
-   // una sola senal por vela y lado: gana la de mayor prioridad
-   for(int lado = 0; lado < 2; lado++)
-     {
-      string cual = (lado == 0) ? "VENTA" : "COMPRA";
-      int mejor = -1;
-      int nc = ArraySize(cand);
-      for(int i = 0; i < nc; i++)
-        {
-         if(cand[i].lado != cual)
+         string cual = (lado == 0) ? "VENTA" : "COMPRA";
+         int mejor = -1;
+         int nc = ArraySize(cand);
+         for(int i = 0; i < nc; i++)
+           {
+            if(cand[i].lado != cual)
+               continue;
+            if(mejor < 0 || Prioridad(cand[i].patron) > Prioridad(cand[mejor].patron))
+               mejor = i;
+           }
+         if(mejor < 0)
             continue;
-         if(mejor < 0 || Prioridad(cand[i].patron) > Prioridad(cand[mejor].patron))
-            mejor = i;
-        }
-      if(mejor < 0)
-         continue;
 
-      Evento ev = cand[mejor];
-      string clave = g_est[idx].nombre + "|" + g_tfTxt + "|" + IntegerToString((long)ultima)
-                     + "|" + ev.lado + "|" + ev.patron;
-      if(YaEnviada(clave))
-         continue;
+         Evento ev = cand[mejor];
+         string clave = g_est[idx].nombre + "|" + g_tfTxt + "|" + IntegerToString((long)ultima)
+                        + "|" + ev.lado + "|" + ev.patron;
+         if(YaEnviada(clave))
+            continue;
 
-      TendMayor tm = TendenciaMayor(g_est[idx].nombre, tCierre);
-      string extra = SufijoTendencia(tm, g_tfTxt);
-      string texto = MensajeSenal(g_est[idx].nombre, g_tfTxt, ev, tVelaUTC, extra);
-      Log("[SENAL] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt + " "
-          + ev.patron + " precio=" + FmtPrecio(ev.precio) + extra);
-      if(EnviarTelegram(texto))
-        {
-         MarcarEnviada(clave);
-         g_est[idx].senales++;
+         TendMayor tm = TendenciaMayor(g_est[idx].nombre, tCierre);
+         string extra = SufijoTendencia(tm, g_tfTxt);
+         string texto = MensajeSenal(g_est[idx].nombre, g_tfTxt, ev, tVelaUTC, extra);
+         Log("[SENAL] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt + " "
+             + ev.patron + " precio=" + FmtPrecio(ev.precio) + extra);
+         if(EnviarTelegram(texto))
+           {
+            MarcarEnviada(clave);
+            g_est[idx].senales[tfi]++;
+           }
         }
      }
   }
@@ -921,6 +932,16 @@ int OnInit()
    Log("=== EstrategiaAdversaria 1.00 ===");
    CargarCfg("adv.cfg");
    CargarEnviadas();
+
+   // Multi-TF: inicializar arrays de temporalidades
+   ArrayResize(g_tfTxtArr, g_nTf);
+   ArrayResize(g_tfArr, g_nTf);
+   g_tfTxtArr[0] = "M3";  g_tfArr[0] = PERIOD_M3;
+   g_tfTxtArr[1] = "M5";  g_tfArr[1] = PERIOD_M5;
+   g_tfTxtArr[2] = "M15"; g_tfArr[2] = PERIOD_M15;
+   g_tfTxtArr[3] = "M30"; g_tfArr[3] = PERIOD_M30;
+   g_tfTxt = g_tfTxtArr[1];   // default para logs
+   g_tf    = g_tfArr[1];
 
    long login     = AccountInfoInteger(ACCOUNT_LOGIN);
    string servidor = AccountInfoString(ACCOUNT_SERVER);
@@ -945,8 +966,11 @@ int OnInit()
       int k = ArraySize(g_est);
       ArrayResize(g_est, k + 1);
       g_est[k].nombre = real;
-      g_est[k].ultimaBarra = 0;
-      g_est[k].senales = 0;
+      for(int tfi = 0; tfi < g_nTf; tfi++)
+        {
+         g_est[k].ultimaBarra[tfi] = 0;
+         g_est[k].senales[tfi]     = 0;
+        }
       g_est[k].avisado = false;
       if(StringLen(real) == 0)
         {
@@ -958,7 +982,10 @@ int OnInit()
       listaOk += (StringLen(listaOk) > 0 ? ", " : "") + real;
      }
 
-   Log("Vigilando " + IntegerToString(ArraySize(g_est)) + " simbolos en " + g_tfTxt
+   string tfLista = "";
+   for(int tfi = 0; tfi < g_nTf; tfi++)
+      tfLista += (tfi > 0 ? "," : "") + g_tfTxtArr[tfi];
+   Log("Vigilando " + IntegerToString(ArraySize(g_est)) + " simbolos en [" + tfLista + "]"
        + " (" + IntegerToString(g_velas) + " velas)" + " | Telegram: "
        + ((g_tgToken != "" && g_tgChat != "") ? "configurado" : "SIN CONFIGURAR"));
 
@@ -972,7 +999,7 @@ int OnInit()
       if(StringLen(g_est[i].nombre) == 0)
          continue;
       MqlRates r[];
-      int m = CopyRates(g_est[i].nombre, g_tf, 0, 2, r);
+      int m = CopyRates(g_est[i].nombre, g_tfArr[1], 0, 2, r);
       string precio = (m > 0) ? FmtPrecio(r[m-1].close) : "sin datos";
       snap = snap + "\n  " + g_est[i].nombre + " = " + precio;
      }
@@ -980,7 +1007,7 @@ int OnInit()
    string msg = "EA ADVERSARIO ARRANCADO";
    msg = msg + "\n" + "Cuenta: " + IntegerToString(login) + " - " + servidor + " (" + modoTxt + ")";
    msg = msg + "\n" + "Activos: " + (StringLen(listaOk) ? listaOk : "(ninguno resuelto)");
-   msg = msg + "\n" + "Temporalidad: " + g_tfTxt;
+   msg = msg + "\n" + "Temporalidades: " + tfLista;
    msg = msg + "\n" + "Horario del servidor: UTC" + (offServidor >= 0 ? "+" : "")
          + IntegerToString((int)(offServidor / 3600));
    msg = msg + "\n" + snap;
@@ -1021,10 +1048,13 @@ void OnTimer()
       if(StringLen(g_est[i].nombre) == 0)
          continue;
       MqlRates r[];
-      int m = CopyRates(g_est[i].nombre, g_tf, 0, 2, r);
+      int m = CopyRates(g_est[i].nombre, g_tfArr[1], 0, 2, r);
       string precio = (m > 0) ? FmtPrecio(r[m-1].close) : "sin datos";
+      int senTot = 0;
+      for(int tfi = 0; tfi < g_nTf; tfi++)
+         senTot += g_est[i].senales[tfi];
       txt = txt + " " + g_est[i].nombre + "=" + precio
-            + "(senales " + IntegerToString(g_est[i].senales) + ")";
+            + "(senales " + IntegerToString(senTot) + ")";
      }
    Log(txt);
    if(g_enviarPrecios == 1 && g_tgToken != "" && g_tgChat != "")
