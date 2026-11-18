@@ -28,10 +28,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: mt5-adversario-${{ matrix.tf }}
-  cancel-in-progress: false
-
 env:
   MT5_DIR: C:\Program Files\MetaTrader 5
 
@@ -40,6 +36,9 @@ jobs:
     name: ea-${{ matrix.tf }}
     runs-on: windows-latest
     timeout-minutes: 350
+    concurrency:
+      group: mt5-adversario-${{ matrix.tf }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
