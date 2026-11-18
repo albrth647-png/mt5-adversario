@@ -164,7 +164,7 @@ jobs:
             'Enabled=1'
             'AllowDllImport=0'
             'WebRequest=1'
-            'WebRequestUrl=https://api.telegram.org'
+            'WebRequestUrl=api.telegram.org,https://api.telegram.org'
             ''
             '[StartUp]'
             'Expert=EstrategiaAdversaria'
@@ -172,6 +172,11 @@ jobs:
             "Period=$tf"
           ) -join "`r`n"
           Set-Content -Path "$env:MT5_DIR\adv.ini" -Value $ini -Encoding ASCII
+          # MT5 guarda la lista blanca de WebRequest en su propio common.ini:
+          # se escribe tambien ahi (modo portable) con las dos formas del host.
+          New-Item -ItemType Directory -Force -Path "$env:MT5_DIR\config" | Out-Null
+          $comun = @('[Experts]', 'WebRequest=1', 'WebRequestUrl=api.telegram.org,https://api.telegram.org') -join "`r`n"
+          Set-Content -Path "$env:MT5_DIR\config\common.ini" -Value $comun -Encoding ASCII
           Write-Host "Simbolos: $sims | TF: $tf | simbolo del grafico: $primero"
 
       - name: Arrancar el terminal y dejar el EA trabajando

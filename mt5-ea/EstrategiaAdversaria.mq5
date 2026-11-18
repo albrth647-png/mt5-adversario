@@ -895,10 +895,11 @@ int OnInit()
 
    long login     = AccountInfoInteger(ACCOUNT_LOGIN);
    string servidor = AccountInfoString(ACCOUNT_SERVER);
+   // ENUM_ACCOUNT_TRADE_MODE: 0 = demo, 1 = concurso, 2 = real
    long modo      = AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   string modoTxt = (modo == 1) ? "demo" : ((modo == 2) ? "concurso" : "REAL");
+   string modoTxt = (modo == 0) ? "demo" : ((modo == 1) ? "concurso" : "REAL");
    Log("Cuenta " + IntegerToString(login) + " en " + servidor + " (" + modoTxt + ")");
-   if(modo != 1)
+   if(modo != 0)
       Log("OJO: ACCOUNT_TRADE_MODE no es demo. Revisa con que cuenta estas entrando.");
 
    string partes[];
