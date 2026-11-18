@@ -170,7 +170,7 @@ string FmtPrecio(const double v)
 // 🟢 y 🔴 sin depender de la codificacion del fuente
 string Icono(const bool compra)
   {
-   return ShortToString(0xD83D) + ShortToString(compra ? 0xDFE2 : 0xDD34);
+   return ShortToString((ushort)0xD83D) + ShortToString((ushort)(compra ? 0xDFE2 : 0xDD34));
   }
 
 string TendenciaTxt(const string t)
@@ -265,11 +265,17 @@ bool EnviarTelegram(const string texto)
    string cuerpo = "{\"chat_id\":\"" + EscJson(g_tgChat)
                    + "\",\"text\":\"" + EscJson(texto)
                    + "\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}";
-   char datos[], respuesta[], cabeceras[];
-   StringToCharArray(cuerpo, datos, 0, StringLen(cuerpo), CP_UTF8);
-   int largo = ArraySize(datos) - 1;   // sin el 0 final
+   char utf8[];
+   StringToCharArray(cuerpo, utf8, 0, StringLen(cuerpo), CP_UTF8);
+   int largo = ArraySize(utf8) - 1;    // sin el 0 final
    if(largo <= 0)
       return false;
+   // WebRequest pide uchar[], no char[]
+   uchar datos[], respuesta[];
+   ArrayResize(datos, largo);
+   for(int i = 0; i < largo; i++)
+      datos[i] = (uchar)utf8[i];
+   string cabeceras = "";
    ResetLastError();
    int code = WebRequest("POST", url, "", "", 8000, datos, largo, respuesta, cabeceras);
    if(code == 200)
