@@ -298,7 +298,9 @@ int g_pendienteSeq = 0;
 void GuardarPendiente(const string texto)
   {
    g_pendienteSeq++;
-   string nombre = "pend_" + IntegerToString(g_pendienteSeq, 4, '0') + ".txt";
+   // Nombre unico: tickcount ms + contador, para que dos mensajes nunca
+   // sobrescriban el mismo archivo (evita perdida de senales).
+   string nombre = "pend_" + IntegerToString(GetTickCount()) + "_" + IntegerToString(g_pendienteSeq) + ".txt";
    int h = FileOpen(nombre, FILE_WRITE|FILE_TXT|FILE_UNICODE);
    if(h == INVALID_HANDLE)
      {
