@@ -115,34 +115,62 @@ foreach ($x in (Get-Content -LiteralPath $cp -Encoding Unicode | Select-String '
 
 # ------------------------------------------------------- entrega de pendientes
 function Enviar-Pendientes {
-  if (-not (Test-Path $pend)) { return 0 }
-  $raw = Get-Content -LiteralPath $pend -Raw -Encoding Unicode
-  if (-not $raw) { return 0 }
-  $bloques = [regex]::Matches($raw, '(?s)===INICIO===\s*\r?\n(.*?)\r?\n===FIN===')
-  if ($bloques.Count -eq 0) { return 0 }
-  $enviados = 0
-  foreach ($b in $bloques) {
-    $texto = $b.Groups[1].Value
-    $body = @{ chat_id = $chat; text = $texto; parse_mode = 'HTML'; disable_web_page_preview = $true } | ConvertTo-Json -Compress
-    try {
-      $r = Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" -Method Post `
-             -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
-      if ($r.ok) {
-        $destino = if ($r.result.chat.username) { '@' + $r.result.chat.username } else { $r.result.chat.title }
-        Write-Host "Telegram ok: msg $($r.result.message_id) -> chat $($r.result.chat.id) ($destino)"
-        $enviados++
+  $entregados = 0
+  # Formato nuevo: un archivo por mensaje (pend_0001.txt, ...). Mas robusto:
+  # sin regex, sin carreras de append, y cada mensaje se borra al entregarse.
+  foreach ($f in @(Get-ChildItem -LiteralPath $files -Filter 'pend_*.txt' -ErrorAction SilentlyContinue)) {
+    $contenido = $null
+    for ($r = 0; $r -lt 5 -and -not $contenido; $r++) {
+      try { $contenido = Get-Content -LiteralPath $f.FullName -Raw -Encoding Unicode } catch { }
+      if (-not $contenido) { Start-Sleep -Seconds 1 }
+    }
+    if (-not $contenido) { Write-Warning "no pude leer $($f.Name); se reintenta"; continue }
+    $body = @{ chat_id = $chat; text = $contenido.Trim(); parse_mode = 'HTML'; disable_web_page_preview = $true } | ConvertTo-Json -Compress
+    $ok = $false
+    $resp = $null
+    for ($r = 0; $r -lt 3 -and -not $ok; $r++) {
+      try {
+        $resp = Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" -Method Post `
+                 -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+        if ($resp.ok) { $ok = $true }
+      } catch {
+        Write-Warning "intento $($r+1) fallo para $($f.Name): $($_.Exception.Message)"
+        Start-Sleep -Seconds 2
       }
-    } catch {
-      Write-Warning "envio a Telegram fallo: $($_.Exception.Message)"
+    }
+    if ($ok) {
+      Remove-Item -LiteralPath $f.FullName -Force
+      $destino = if ($resp.result.chat.username) { '@' + $resp.result.chat.username } else { $resp.result.chat.title }
+      Write-Host "Telegram ok: msg $($resp.result.message_id) -> chat $($resp.result.chat.id) ($destino)"
+      $entregados++
+    } else {
+      Write-Warning "NO se pudo entregar $($f.Name); se reintenta en el siguiente ciclo"
     }
   }
-  if ($enviados -eq $bloques.Count) {
-    Remove-Item -LiteralPath $pend -Force
-    Write-Host "pendientes entregados: $enviados"
-  } else {
-    Write-Warning "entregados $enviados de $($bloques.Count); se reintenta"
+  # Formato legado (adv_pendientes.txt con marcadores) por compatibilidad.
+  if (Test-Path $pend) {
+    $raw = $null
+    for ($r = 0; $r -lt 5 -and -not $raw; $r++) {
+      try { $raw = Get-Content -LiteralPath $pend -Raw -Encoding Unicode } catch { }
+      if (-not $raw) { Start-Sleep -Seconds 1 }
+    }
+    if ($raw) {
+      $bloques = [regex]::Matches($raw, '(?s)===INICIO===\s*\r?\n(.*?)\r?\n===FIN===')
+      if ($bloques.Count -gt 0) {
+        $bl = 0
+        foreach ($b in $bloques) {
+          $body = @{ chat_id = $chat; text = $b.Groups[1].Value.Trim(); parse_mode = 'HTML'; disable_web_page_preview = $true } | ConvertTo-Json -Compress
+          try {
+            $r = Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" -Method Post `
+                   -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+            if ($r.ok) { $bl++; $entregados++ }
+          } catch { Write-Warning "legado: $($_.Exception.Message)" }
+        }
+        if ($bl -eq $bloques.Count) { Remove-Item -LiteralPath $pend -Force; Write-Host "pendientes entregados: $bl" }
+      }
+    }
   }
-  return $enviados
+  return $entregados
 }
 
 # ------------------------------------------------------------------- arranque

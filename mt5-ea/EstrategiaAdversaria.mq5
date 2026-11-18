@@ -290,21 +290,23 @@ bool EnviarTelegram(const string texto)
   }
 
 // Si MT5 no deja salir a WebRequest (error 4014: URL no autorizada), el mensaje
-// se guarda aqui y el runner del workflow lo manda tal cual. Asi la senal nunca
-// se pierde por una restriccion de la terminal.
+// se guarda en un archivo propio (uno por mensaje) y el runner del workflow lo
+// manda tal cual. Un archivo por mensaje evita carreras de lectura/escritura
+// y hace la entrega fiable.
+int g_pendienteSeq = 0;
 void GuardarPendiente(const string texto)
   {
-   int h = FileOpen("adv_pendientes.txt", FILE_READ|FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   g_pendienteSeq++;
+   string nombre = "pend_" + IntegerToString(g_pendienteSeq, 4, '0') + ".txt";
+   int h = FileOpen(nombre, FILE_WRITE|FILE_TXT|FILE_UNICODE);
    if(h == INVALID_HANDLE)
      {
-      Log("no puedo abrir adv_pendientes.txt (error " + IntegerToString(GetLastError()) + ")");
+      Log("no puedo abrir " + nombre + " (error " + IntegerToString(GetLastError()) + ")");
       return;
      }
-   FileSeek(h, 0, SEEK_END);
-   FileWrite(h, "===INICIO===");
    FileWrite(h, texto);
-   FileWrite(h, "===FIN===");
    FileClose(h);
+   Log("mensaje guardado en " + nombre + " (pendiente de entrega)");
   }
 
 //--------------------------------------------------------------------
