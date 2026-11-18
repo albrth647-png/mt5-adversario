@@ -283,8 +283,28 @@ bool EnviarTelegram(const string texto)
       Log("Telegram: enviado (" + IntegerToString(largo) + " bytes)");
       return true;
      }
-   Log(StringFormat("Telegram: FALLO http=%d error=%d", code, GetLastError()));
+   int fallo = GetLastError();
+   Log(StringFormat("Telegram: FALLO http=%d error=%d -> queda en adv_pendientes.txt", code, fallo));
+   GuardarPendiente(texto);
    return false;
+  }
+
+// Si MT5 no deja salir a WebRequest (error 4014: URL no autorizada), el mensaje
+// se guarda aqui y el runner del workflow lo manda tal cual. Asi la senal nunca
+// se pierde por una restriccion de la terminal.
+void GuardarPendiente(const string texto)
+  {
+   int h = FileOpen("adv_pendientes.txt", FILE_READ|FILE_WRITE|FILE_TXT|FILE_UNICODE|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+     {
+      Log("no puedo abrir adv_pendientes.txt (error " + IntegerToString(GetLastError()) + ")");
+      return;
+     }
+   FileSeek(h, 0, SEEK_END);
+   FileWrite(h, "===INICIO===");
+   FileWrite(h, texto);
+   FileWrite(h, "===FIN===");
+   FileClose(h);
   }
 
 //--------------------------------------------------------------------
