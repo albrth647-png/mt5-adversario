@@ -284,7 +284,7 @@ bool EnviarTelegram(const string texto)
       return true;
      }
    int fallo = GetLastError();
-   Log(StringFormat("Telegram: FALLO http=%d error=%d -> queda en adv_pendientes.txt", code, fallo));
+   Log(StringFormat("Telegram: FALLO http=%d error=%d -> queda en pend_*.txt", code, fallo));
    GuardarPendiente(texto);
    return false;
   }
