@@ -177,9 +177,9 @@ string Icono(const bool compra)
 string TendenciaTxt(const string t)
   {
    if(t == "ALCISTA")
-      return "ALCISTA (EMA30 > EMA50 > EMA100)";
+      return "ALCISTA (EMA30 &gt; EMA50 &gt; EMA100)";
    if(t == "BAJISTA")
-      return "BAJISTA (EMA30 < EMA50 < EMA100)";
+      return "BAJISTA (EMA30 &lt; EMA50 &lt; EMA100)";
    return "LATERAL (precio y EMAs no alineados)";
   }
 

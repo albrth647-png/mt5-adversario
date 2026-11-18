@@ -136,7 +136,16 @@ function Enviar-Pendientes {
                  -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
         if ($resp.ok) { $ok = $true }
       } catch {
-        Write-Warning "intento $($r+1) fallo para $($f.Name): $($_.Exception.Message)"
+        $detalle = $_.Exception.Message
+        try {
+          $stream = $_.Exception.Response.GetResponseStream()
+          if ($stream) {
+            $reader = New-Object System.IO.StreamReader($stream)
+            $detalle = $detalle + ' | ' + $reader.ReadToEnd()
+            $reader.Close()
+          }
+        } catch { }
+        Write-Warning "intento $($r+1) fallo para $($f.Name): $detalle"
         Start-Sleep -Seconds 2
       }
     }
