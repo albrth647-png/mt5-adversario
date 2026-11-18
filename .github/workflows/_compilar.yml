@@ -26,11 +26,18 @@ jobs:
           $dst = "$env:MT5_DIR\MQL5\Experts"
           New-Item -ItemType Directory -Force -Path $dst | Out-Null
           Copy-Item 'mt5-ea\EstrategiaAdversaria.mq5' $dst -Force
-          & "$env:MT5_DIR\metaeditor64.exe" "/compile:$dst\EstrategiaAdversaria.mq5" "/log:$env:RUNNER_TEMP\c"
-          Start-Sleep 2
-          if (Test-Path "$env:RUNNER_TEMP\c.log") {
-            Write-Host '--- log del compilador ---'
-            Get-Content "$env:RUNNER_TEMP\c.log" -Encoding Unicode
+          Write-Host "MQL5 dir existe: $(Test-Path "$env:MT5_DIR\MQL5")"
+          $log = "$env:RUNNER_TEMP\c.log"
+          $p = Start-Process -FilePath "$env:MT5_DIR\metaeditor64.exe" -ArgumentList "/compile:$dst\EstrategiaAdversaria.mq5","/log:$env:RUNNER_TEMP\c" -Wait -PassThru
+          Write-Host "metaeditor exit=$($p.ExitCode)"
+          for ($i=0; $i -lt 30 -and -not (Test-Path "$dst\EstrategiaAdversaria.ex5"); $i++) { Start-Sleep 2 }
+          foreach ($f in @($log, "$dst\EstrategiaAdversaria.log")) {
+            if (Test-Path $f) {
+              Write-Host "--- $f ---"
+              $txt = Get-Content $f -Raw
+              if ($txt -match "\u0000") { $txt = Get-Content $f -Raw -Encoding Unicode }
+              Write-Host $txt
+            }
           }
           if (Test-Path "$dst\EstrategiaAdversaria.ex5") {
             Write-Host "EX5 OK: $((Get-Item "$dst\EstrategiaAdversaria.ex5").Length) bytes"
