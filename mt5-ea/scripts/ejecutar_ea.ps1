@@ -127,7 +127,11 @@ function Enviar-Pendientes {
     try {
       $r = Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" -Method Post `
              -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
-      if ($r.ok) { $enviados++ }
+      if ($r.ok) {
+        $destino = if ($r.result.chat.username) { '@' + $r.result.chat.username } else { $r.result.chat.title }
+        Write-Host "Telegram ok: msg $($r.result.message_id) -> chat $($r.result.chat.id) ($destino)"
+        $enviados++
+      }
     } catch {
       Write-Warning "envio a Telegram fallo: $($_.Exception.Message)"
     }
