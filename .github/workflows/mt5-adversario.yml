@@ -20,10 +20,6 @@ on:
         description: "Minutos que queda abierto el terminal (max 330)"
         default: "240"
         required: true
-      tf:
-        description: "Temporalidad a escanear (M1 / M5 / M15)"
-        default: "M5"
-        required: true
       servidor:
         description: "Servidor MT5 (vacio = usar el secret MT5_SERVER)"
         default: ""
@@ -33,7 +29,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mt5-adversario
+  group: mt5-adversario-${{ matrix.tf }}
   cancel-in-progress: false
 
 env:
@@ -41,8 +37,13 @@ env:
 
 jobs:
   ea:
+    name: ea-${{ matrix.tf }}
     runs-on: windows-latest
     timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: [M3, M5, M15]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -83,7 +84,7 @@ jobs:
           MT5_SYMBOLS: ${{ vars.MT5_SYMBOLS }}
           S_OVR: ${{ inputs.servidor }}
           MIN: ${{ inputs.minutos }}
-          TF_IN: ${{ inputs.tf }}
+          TF_IN: ${{ matrix.tf }}
         run: |
           if ($env:S_OVR) { $env:MT5_SERVER = $env:S_OVR; Write-Host "servidor de prueba: $env:S_OVR" }
           ./mt5-ea/scripts/ejecutar_ea.ps1 -Minutos ([int]$env:MIN) -Tf $env:TF_IN
@@ -107,7 +108,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mt5-adversario-logs
+          name: mt5-adversario-logs-${{ matrix.tf }}
           path: |
             C:\Program Files\MetaTrader 5\MQL5\Files\*.log
             C:\Program Files\MetaTrader 5\MQL5\Files\*.txt
