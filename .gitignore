@@ -1,0 +1,5 @@
+# Nada que ignorar: el repo solo lleva el EA y el workflow.
+# adv.cfg lo genera el workflow con los secrets, nunca se versiona.
+adv.cfg
+adv.log
+adv_enviados.txt

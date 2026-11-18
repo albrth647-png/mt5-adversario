@@ -1,0 +1,192 @@
+name: MT5 adversario (demo -> Telegram)
+# Instala MetaTrader 5 en un runner Windows (una PC virtual de GitHub), entra en
+# la cuenta DEMO del propietario, compila y arranca el EA adversario, y el
+# PROPIO EA manda cada senal de la escalera a Telegram con WebRequest.
+#
+# Secrets necesarios (Settings > Secrets and variables > Actions):
+#   MT5_LOGIN       numero de cuenta demo
+#   MT5_PASSWORD    contrasena de la demo
+#   MT5_SERVER      nombre exacto del servidor (abajo a la derecha en MT5)
+#   TELEGRAM_TOKEN  token del bot
+#   TELEGRAM_CHAT   chat/grupo destino (puede ser negativo)
+# Variable opcional:
+#   MT5_SYMBOLS     "FX Vol 20,FX Vol 40,SFX Vol 20,SFX Vol 40"
+#
+# El EA NO opera: solo lee velas del broker real y envia el mensaje.
+on:
+  workflow_dispatch:
+    inputs:
+      minutos:
+        description: "Minutos que queda abierto el terminal (max 330)"
+        default: "240"
+        required: true
+      tf:
+        description: "Temporalidad a escanear (M1 / M5 / M15)"
+        default: "M5"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mt5-adversario
+  cancel-in-progress: false
+
+env:
+  MT5_DIR: C:\Program Files\MetaTrader 5
+
+jobs:
+  ea:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Comprobar secrets
+        shell: pwsh
+        env:
+          S_LOGIN: ${{ secrets.MT5_LOGIN }}
+          S_PASS: ${{ secrets.MT5_PASSWORD }}
+          S_SERVER: ${{ secrets.MT5_SERVER }}
+          S_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          S_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+        run: |
+          $falta = @()
+          if (-not $env:S_LOGIN)  { $falta += 'MT5_LOGIN' }
+          if (-not $env:S_PASS)   { $falta += 'MT5_PASSWORD' }
+          if (-not $env:S_SERVER) { $falta += 'MT5_SERVER' }
+          if (-not $env:S_TOKEN)  { $falta += 'TELEGRAM_TOKEN' }
+          if (-not $env:S_CHAT)   { $falta += 'TELEGRAM_CHAT' }
+          if ($falta.Count -gt 0) {
+            Write-Error ("Faltan secrets: " + ($falta -join ', '))
+            exit 1
+          }
+          Write-Host "Secrets presentes."
+
+      - name: Instalar MetaTrader 5
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          Invoke-WebRequest -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' -OutFile $exe -UseBasicParsing
+          Start-Process -FilePath $exe -ArgumentList '/auto' -Wait
+          for ($i = 0; $i -lt 90; $i++) {
+            if (Test-Path "$env:MT5_DIR\terminal64.exe") { break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not (Test-Path "$env:MT5_DIR\terminal64.exe")) { throw 'MT5 no quedo instalado' }
+          (Get-Item "$env:MT5_DIR\terminal64.exe").VersionInfo.FileVersion
+
+      - name: Compilar el EA
+        shell: pwsh
+        run: |
+          $dst = "$env:MT5_DIR\MQL5\Experts"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Path 'mt5-ea\EstrategiaAdversaria.mq5' -Destination $dst -Force
+          & "$env:MT5_DIR\metaeditor64.exe" "/compile:$dst\EstrategiaAdversaria.mq5" "/log:$env:RUNNER_TEMP\compile"
+          Start-Sleep -Seconds 2
+          if (Test-Path "$env:RUNNER_TEMP\compile.log") {
+            Get-Content "$env:RUNNER_TEMP\compile.log" -Encoding Unicode
+          }
+          if (-not (Test-Path "$dst\EstrategiaAdversaria.ex5")) { throw 'el EA no compilo (.ex5 ausente)' }
+          Write-Host "EA compilado."
+
+      - name: Configurar cuenta, Telegram y arranque del EA
+        shell: pwsh
+        env:
+          MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
+          MT5_SERVER: ${{ secrets.MT5_SERVER }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+          MT5_SYMBOLS: ${{ vars.MT5_SYMBOLS }}
+          TF: ${{ github.event.inputs.tf }}
+        run: |
+          $sims = if ($env:MT5_SYMBOLS) { $env:MT5_SYMBOLS } else { 'FX Vol 20,FX Vol 40,SFX Vol 20,SFX Vol 40' }
+          $tf   = if ($env:TF) { $env:TF } else { 'M5' }
+          New-Item -ItemType Directory -Force -Path "$env:MT5_DIR\MQL5\Files" | Out-Null
+          $cfg = @(
+            "token=$env:TELEGRAM_TOKEN"
+            "chat=$env:TELEGRAM_CHAT"
+            "simbolos=$sims"
+            "tf=$tf"
+            "velas=3000"
+            "latido=15"
+          ) -join "`r`n"
+          Set-Content -Path "$env:MT5_DIR\MQL5\Files\adv.cfg" -Value $cfg -Encoding ASCII
+
+          $primero = ($sims -split ',')[0].Trim()
+          $ini = @(
+            '[Common]'
+            "Login=$env:MT5_LOGIN"
+            "Password=$env:MT5_PASSWORD"
+            "Server=$env:MT5_SERVER"
+            ''
+            '[Experts]'
+            'AllowLiveTrading=1'
+            'Enabled=1'
+            'AllowDllImport=0'
+            'WebRequest=1'
+            'WebRequestUrl=https://api.telegram.org'
+            ''
+            '[StartUp]'
+            'Expert=EstrategiaAdversaria'
+            "Symbol=$primero"
+            "Period=$tf"
+          ) -join "`r`n"
+          Set-Content -Path "$env:MT5_DIR\adv.ini" -Value $ini -Encoding ASCII
+          Write-Host "Simbolos: $sims | TF: $tf | simbolo del grafico: $primero"
+
+      - name: Arrancar el terminal y dejar el EA trabajando
+        shell: pwsh
+        env:
+          MIN: ${{ github.event.inputs.minutos }}
+        run: |
+          $min = [int]$env:MIN
+          if ($min -gt 330) { $min = 330 }
+          $p = Start-Process -FilePath "$env:MT5_DIR\terminal64.exe" `
+               -ArgumentList '/portable', "/config:`"$env:MT5_DIR\adv.ini`"" -PassThru
+          Write-Host "terminal64 pid=$($p.Id) durante $min min"
+          $log = "$env:MT5_DIR\MQL5\Files\adv.log"
+          for ($i = 1; $i -le $min; $i++) {
+            Start-Sleep -Seconds 60
+            if ($p.HasExited) { Write-Warning "el terminal termino solo (exit $($p.ExitCode))"; break }
+            Write-Host "==== minuto $i ===="
+            if (Test-Path $log) { Get-Content $log -Tail 3 } else { Write-Host "sin adv.log todavia" }
+            if (-not (Test-Path $log) -and $i -eq 2) {
+              Write-Host "== el EA no escribio nada en 2 min: log del terminal =="
+              Get-ChildItem "$env:MT5_DIR\logs\*.log" -ErrorAction SilentlyContinue |
+                ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName -Tail 40 -Encoding Unicode }
+              Get-ChildItem "$env:MT5_DIR\MQL5\Logs\*.log" -ErrorAction SilentlyContinue |
+                ForEach-Object { Write-Host "--- $($_.Name)"; Get-Content $_.FullName -Tail 40 }
+            }
+          }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
+      - name: Resumen (ultimas senales)
+        if: always()
+        shell: pwsh
+        run: |
+          $log = "$env:MT5_DIR\MQL5\Files\adv.log"
+          $out = ''
+          if (Test-Path $log) {
+            $sen = Select-String -Path $log -Pattern '\[SENAL\]'
+            $out = "Lineas de senal: " + $sen.Count + "`n"
+            $out += ($sen | Select-Object -Last 15 | ForEach-Object { $_.Line }) -join "`n"
+          } else {
+            $out = 'No hay adv.log'
+          }
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $out
+
+      - name: Subir logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mt5-adversario-logs
+          path: |
+            C:\Program Files\MetaTrader 5\MQL5\Files\*.log
+            C:\Program Files\MetaTrader 5\MQL5\Files\*.txt
+            C:\Program Files\MetaTrader 5\MQL5\Logs\*.log
+            C:\Program Files\MetaTrader 5\logs\*.log
+          retention-days: 14
+          if-no-files-found: warn
