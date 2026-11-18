@@ -174,11 +174,41 @@ jobs:
           Set-Content -Path "$env:MT5_DIR\adv.ini" -Value $ini -Encoding ASCII
           # MT5 guarda la lista blanca de WebRequest en su propio common.ini:
           # se escribe tambien ahi (modo portable) con las dos formas del host.
-          # La lista blanca de WebRequest NO se aplica desde un config alternativo
-          # (/config), asi que la configuracion completa va al common.ini del modo
-          # portable y el terminal arranca sin /config. MT5 lo escribe en UTF-16.
+          # La lista blanca de WebRequest vive en el common.ini del terminal y hay
+          # que FUSIONARLA (no sobrescribir el archivo, o MT5 lo regenera perdiendo
+          # el resto). El archivo es UTF-16.
           New-Item -ItemType Directory -Force -Path "$env:MT5_DIR\config" | Out-Null
-          Set-Content -Path "$env:MT5_DIR\config\common.ini" -Value $ini -Encoding Unicode
+          $cp = "$env:MT5_DIR\config\common.ini"
+          $lineas = @()
+          if (Test-Path $cp) { $lineas = Get-Content -LiteralPath $cp -Encoding Unicode }
+          $extra = @('WebRequest=1', 'WebRequestUrl=api.telegram.org,https://api.telegram.org')
+          $out = New-Object System.Collections.Generic.List[string]
+          $i = 0
+          $hecho = $false
+          while ($i -lt $lineas.Count) {
+            $l = $lineas[$i]
+            if ($l -match '^\s*\[(.+)\]\s*$') {
+              $sec = $matches[1]
+              $out.Add($l)
+              if ($sec -eq 'Experts') {
+                $i++
+                while ($i -lt $lineas.Count -and $lineas[$i] -notmatch '^\s*\[') {
+                  if ($lineas[$i] -notmatch '^\s*WebRequest') { $out.Add($lineas[$i]) }
+                  $i++
+                }
+                foreach ($e in $extra) { $out.Add($e) }
+                $hecho = $true
+                continue
+              }
+            } else {
+              $out.Add($l)
+            }
+            $i++
+          }
+          if (-not $hecho) { $out.Add('[Experts]'); foreach ($e in $extra) { $out.Add($e) } }
+          Set-Content -LiteralPath $cp -Value $out -Encoding Unicode
+          Write-Host '--- common.ini tras la fusion ---'
+          (Get-Content -LiteralPath $cp -Encoding Unicode | Select-String 'WebRequest')
           Write-Host "Simbolos: $sims | TF: $tf | simbolo del grafico: $primero"
 
       - name: Arrancar el terminal y dejar el EA trabajando
@@ -188,10 +218,9 @@ jobs:
         run: |
           $min = [int]$env:MIN
           if ($min -gt 330) { $min = 330 }
-          Write-Host '--- [Experts] del common.ini ---'
-          (Get-Content "$env:MT5_DIR\config\common.ini" | Select-String 'WebRequest')
+          (Get-Content "$env:MT5_DIR\config\common.ini" -Encoding Unicode | Select-String 'WebRequest')
           $p = Start-Process -FilePath "$env:MT5_DIR\terminal64.exe" `
-               -ArgumentList '/portable' -PassThru
+               -ArgumentList '/portable', "/config:`"$env:MT5_DIR\adv.ini`"" -PassThru
           Write-Host "terminal64 pid=$($p.Id) durante $min min"
           $log = "$env:MT5_DIR\MQL5\Files\adv.log"
           for ($i = 1; $i -le $min; $i++) {
