@@ -1367,7 +1367,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
             if(alineada && !bloqueadoE)
                Emitir(eventos, i, venta, ConReset(base, s.ciclo), cierre, t.extremo, t.nivel,
                       e30[i], e50[i], e100[i], cierre);
-            if(bloqueadoE)
+            if(bloqueadoE && alineada)
                Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura quiebre " + g_tfTxt
                    + " bloqueado: cruces=" + IntegerToString(crE) + " ER=" + DoubleToString(erE,2)
                    + " sep=" + DoubleToString(sep1E,2) + "/" + DoubleToString(sep2E,2));
@@ -1458,7 +1458,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
          if(alineada && !bloqueadoE2)
             Emitir(eventos, i, venta, codigo, r[i].close, contacto, nivelQuiebre,
                    e30[i], e50[i], e100[i], r[i].close);
-         if(bloqueadoE2)
+         if(bloqueadoE2 && alineada)
             Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura toque " + g_tfTxt
                 + " bloqueado: cruces=" + IntegerToString(crE2) + " ER=" + DoubleToString(erE2,2)
                 + " sep=" + DoubleToString(sep1E2,2) + "/" + DoubleToString(sep2E2,2));
