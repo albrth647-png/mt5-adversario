@@ -54,12 +54,17 @@ double P_tolRetesteoAtr    = 0.30;
 // Filtros anti-ruido (precio pegado a EMA30)
 int    P_ventanaCruces     = 12;
 int    P_minCrucesBloqueo  = 3;
-int    P_ventanaER         = 20;
-double P_erMinimo          = 0.25;
+int    P_ventanaER         = 10;    // ventana corta: el ER de 20 castiga el retroceso
+double P_erMinToque        = 0.18;
+double P_erMinQuiebre      = 0.22;
 double P_sepMinE30E50      = 0.5;
 double P_sepMinE50E100     = 1.0;
+// Una sola entrada por secuencia: si ya salio la 2 (o la 3), no se emite
+// despues la 2B/3B del mismo movimiento. Ponlo en false para comparar.
+bool   P_unaPorSecuencia   = true;
 
 datetime g_ultimoLatido = 0;
+int      g_barraActual   = -1;   // solo se loguean los bloqueos de la vela actual
 
 //--------------------------------------------------------------------
 //  Estructuras
@@ -82,6 +87,7 @@ struct Secuencia
    int    nT;
    int    ciclo;
    int    avisados;
+   bool   emitida;      // ya se entrego una entrada en este ciclo
    bool   retesteo;
    int    retBar;
    double retNivel;
@@ -572,6 +578,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.ciclo++;
          s.nT = 0;
          s.avisados = 0;
+         s.emitida  = false;
         }
       s.retesteo = false;
      }
@@ -597,6 +604,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.ciclo++;
          s.nT = 0;
          s.avisados = 0;
+         s.emitida  = false;
          s.retesteo = false;
          s.engano = false;
          s.enganoBar = -1;
@@ -620,6 +628,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.nT = 0;
          s.ciclo = 0;
          s.avisados = 0;
+         s.emitida  = false;
          s.retesteo = false;
          s.engano = false;
          s.enganoBar = -1;
@@ -686,27 +695,30 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       // la 2 y la 3 son senales: el toque se entrega como entrada
       if(s.nT >= 2 && s.avisados != s.nT)
         {
-         s.avisados = s.nT;
-         // Filtros anti-ruido: precio pegado a EMA30
+         // Filtros anti-ruido: solo la vela actual escribe log
          int cr = CrucesEma30(r, e30, i, P_ventanaCruces);
-         double er = Eficiencia(r, i, P_ventanaER);          double sep1 = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
-          double sep2 = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
+         double er = Eficiencia(r, i, P_ventanaER);
+         double sep1 = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
+         double sep2 = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
          bool bloqueado = false;
          string motivo = "";
          if(cr >= P_minCrucesBloqueo) { bloqueado = true; motivo = motivo + " cruces=" + IntegerToString(cr); }
-         if(er < P_erMinimo)          { bloqueado = true; motivo = motivo + " ER=" + DoubleToString(er, 2); }
-         if(sep1 < P_sepMinE30E50 || sep2 < P_sepMinE50E100)
-           { bloqueado = true; motivo = motivo + " sep=" + DoubleToString(sep1, 2) + "/" + DoubleToString(sep2, 2); }
+         if(er < P_erMinToque)        { bloqueado = true; motivo = motivo + " ER=" + DoubleToString(er, 2); }
+         // la separacion ya vive dentro de "alineada": aqui solo se mide
+         motivo = motivo + " sep=" + DoubleToString(sep1, 2) + "/" + DoubleToString(sep2, 2);
          if(bloqueado)
            {
-            Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque" + IntegerToString(s.nT)
-                + " " + g_tfTxt + " bloqueado:" + motivo);
+            if(i == g_barraActual)
+               Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque" + IntegerToString(s.nT)
+                   + " " + g_tfTxt + " bloqueado:" + motivo);
            }
          else
            {
             Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c, extremo, nivel,
                    E30, E50, E100, c);
             s.ultimaEntrada = i;
+            s.avisados = s.nT;   // solo si de verdad se emitio
+            s.emitida  = true;
            }
         }
      }
@@ -734,6 +746,19 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    else
       return;                       // sin toque y sin engano: no hay codigo
 
+   // una sola entrada por secuencia: si la 2/3 ya se emitio, su 2B/3B no sale
+   if(P_unaPorSecuencia && s.emitida && base != "1")
+     {
+      s.ciclo++;                // la jugada ya dio su entrada: se cierra la escalera
+      s.nT = 0;
+      s.avisados = 0;
+      s.emitida = false;
+      s.engano = false;
+      s.enganoBar = -1;
+      s.enganoNivel = 0;
+      return;
+     }
+
    double nivelQ = (base == "1") ? s.enganoNivel : t4.nivel;
    if(!(nivelQ > 0))
       return;
@@ -755,13 +780,14 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    bool bloqueadoQ = false;
    string motivoQ = "";
    if(crQ >= P_minCrucesBloqueo) { bloqueadoQ = true; motivoQ = motivoQ + " cruces=" + IntegerToString(crQ); }
-   if(erQ < P_erMinimo)          { bloqueadoQ = true; motivoQ = motivoQ + " ER=" + DoubleToString(erQ, 2); }
-   if(sep1Q < P_sepMinE30E50 || sep2Q < P_sepMinE50E100)
-     { bloqueadoQ = true; motivoQ = motivoQ + " sep=" + DoubleToString(sep1Q, 2) + "/" + DoubleToString(sep2Q, 2); }
+   if(erQ < P_erMinQuiebre)      { bloqueadoQ = true; motivoQ = motivoQ + " ER=" + DoubleToString(erQ, 2); }
+   // la separacion ya vive dentro de "alineada": aqui solo se mide
+   motivoQ = motivoQ + " sep=" + DoubleToString(sep1Q, 2) + "/" + DoubleToString(sep2Q, 2);
    if(bloqueadoQ)
      {
-      Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " quiebre " + base
-          + " " + g_tfTxt + " bloqueado:" + motivoQ);
+      if(i == g_barraActual)
+         Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " quiebre " + base
+             + " " + g_tfTxt + " bloqueado:" + motivoQ);
       return;
      }
 
@@ -780,6 +806,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    s.ciclo++;
    s.nT = 0;
    s.avisados = 0;
+   s.emitida  = false;
    s.engano = false;
    s.enganoBar = -1;
    s.enganoNivel = 0;
@@ -794,6 +821,7 @@ void Escanear(const MqlRates &r[], Evento &eventos[])
    int n = ArraySize(r);
    if(n < P_emaFondo + 5)
       return;
+   g_barraActual = n - 1;   // solo la vela recien cerrada escribe log
 
    double cierres[];
    ArrayResize(cierres, n);
@@ -1175,6 +1203,7 @@ struct SecuenciaE
    Toque  t1, t2, t3;
    int    nT;
    int    ciclo;
+   bool   emitida;      // ya se entrego una entrada en este ciclo
    bool   impulso;
    int    impulsoBar;
    double impulsoOrigen;
@@ -1310,6 +1339,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
          s.impulsoExtremo = imp.extremo;
          s.tienePico = false;
          s.pico = 0;
+         s.emitida = false;   // ciclo nuevo
          impulsoDetectado = true;
         }
      }
@@ -1332,6 +1362,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
       s.tienePico = false;
       s.nT = 0;
       s.ciclo = 0;
+      s.emitida = false;
       return;
      }
 
@@ -1346,6 +1377,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
             s.nT = 0;
             s.impulso = false;
             s.tienePico = false;
+            s.emitida = false;
             return;
            }
          bool rompe = (t.nivel > 0) && (venta ? (cierre < t.nivel) : (cierre > t.nivel));
@@ -1356,17 +1388,21 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
                                   : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
             int crE = CrucesEma30(r, e30, i, P_ventanaCruces);
             double erE = Eficiencia(r, i, P_ventanaER);             double sep1E = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];             double sep2E = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
-            bool bloqueadoE = (crE >= P_minCrucesBloqueo) || (erE < P_erMinimo)
-                              || (sep1E < P_sepMinE30E50) || (sep2E < P_sepMinE50E100);
-            if(alineada && !bloqueadoE)
+            // la separacion ya vive dentro de "alineada": aqui solo se mide
+            bool bloqueadoE = (crE >= P_minCrucesBloqueo) || (erE < P_erMinQuiebre);
+            bool yaEmitidaE = P_unaPorSecuencia && s.emitida && (base != "1E");
+            if(alineada && !bloqueadoE && !yaEmitidaE)
+              {
                Emitir(eventos, i, venta, ConReset(base, s.ciclo), cierre, t.extremo, t.nivel,
                       e30[i], e50[i], e100[i], cierre);
-            if(bloqueadoE && alineada)
+               s.emitida = true;
+               s.ciclo++;              // el reset solo avanza si de verdad hubo senal
+               s.ultimaEntradaBar = i;
+              }
+            if(bloqueadoE && alineada && i == g_barraActual)
                Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura quiebre " + g_tfTxt
                    + " bloqueado: cruces=" + IntegerToString(crE) + " ER=" + DoubleToString(erE,2)
                    + " sep=" + DoubleToString(sep1E,2) + "/" + DoubleToString(sep2E,2));
-            s.ciclo++;
-            s.ultimaEntradaBar = i;
             s.nT = 0;
             s.impulso = false;
             s.impulsoBar = -1;
@@ -1445,12 +1481,15 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
                                : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
          int crE2 = CrucesEma30(r, e30, i, P_ventanaCruces);
          double erE2 = Eficiencia(r, i, P_ventanaER);          double sep1E2 = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];          double sep2E2 = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
-         bool bloqueadoE2 = (crE2 >= P_minCrucesBloqueo) || (erE2 < P_erMinimo)
-                            || (sep1E2 < P_sepMinE30E50) || (sep2E2 < P_sepMinE50E100);
+         // la separacion ya vive dentro de "alineada": aqui solo se mide
+         bool bloqueadoE2 = (crE2 >= P_minCrucesBloqueo) || (erE2 < P_erMinToque);
          if(alineada && !bloqueadoE2)
+           {
             Emitir(eventos, i, venta, codigo, r[i].close, contacto, nivelQuiebre,
                    e30[i], e50[i], e100[i], r[i].close);
-         if(bloqueadoE2 && alineada)
+            s.emitida = true;
+           }
+         if(bloqueadoE2 && alineada && i == g_barraActual)
             Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura toque " + g_tfTxt
                 + " bloqueado: cruces=" + IntegerToString(crE2) + " ER=" + DoubleToString(erE2,2)
                 + " sep=" + DoubleToString(sep1E2,2) + "/" + DoubleToString(sep2E2,2));
@@ -1464,6 +1503,7 @@ void EscanearEstructura(const MqlRates &r[], Evento &eventos[])
    int n = ArraySize(r);
    if(n < P_atrPeriodo + 5)
       return;
+   g_barraActual = n - 1;   // solo la vela recien cerrada escribe log
 
    double cierres[];
    ArrayResize(cierres, n);
