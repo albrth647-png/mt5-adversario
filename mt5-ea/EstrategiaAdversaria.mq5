@@ -87,6 +87,26 @@ bool   P_bPorRuptura       = true;
 // la EMA100; con esto en true esa senal no habria salido. Por eso va en false.
 bool   P_enganoExigeE100   = false;
 
+//--------------------------------------------------------------------
+//  Modo backtest (Strategy Tester / GitHub Actions)
+//  En el tester no hay timer ni Telegram. El EA recorre las velas con
+//  OnTick, escribe la senal de cada vela cerrada y las barras usadas, y
+//  el analisis (SL amplio / TP 1.5R / TL) lo hace Python sobre esos CSV.
+//  Asi UN pase de MT5 sirve para barrer todos los TP y TL sin repetir
+//  la prueba: el camino del precio ya esta en el archivo.
+//--------------------------------------------------------------------
+bool   InpBacktest   = false;   // forzar modo backtest (el tester lo activa solo)
+string InpBtCarpeta  = "bt";    // subcarpeta en la carpeta COMUN de MT5
+bool   InpBtBarras   = true;    // exportar barras (necesario para simular SL/TP)
+int    InpBtVentana  = 600;     // velas de calculo por vela cerrada (EMA100 ya converge)
+bool   InpBtLog      = false;   // escribir el log completo (muy lento en backtest)
+
+bool     g_bt = false;
+int      g_btHsen = INVALID_HANDLE;
+int      g_btHbar[4];
+datetime g_btUltBarra[4];
+int      g_btEventos = 0;
+
 datetime g_ultimoLatido = 0;
 int      g_barraActual   = -1;   // solo se loguean los bloqueos de la vela actual
 int      g_tfIdx         = 0;    // temporalidad en curso (0..3), para el embudo
@@ -197,6 +217,10 @@ struct Evento
 //--------------------------------------------------------------------
 void Log(const string msg)
   {
+   // en backtest cada vela escribiria 4 lineas: 86k velas x 4 TF = cientos de
+   // MB de log y la prueba se va en disco. Se apaga salvo InpBtLog.
+   if(g_bt && !InpBtLog)
+      return;
    string linea = TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS) + " " + msg;
    Print(linea);
    int h = FileOpen("adv.log", FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
@@ -1275,6 +1299,167 @@ void Revisar(const int idx)
   }
 
 //--------------------------------------------------------------------
+//  BACKTEST: CSV de senales y de barras
+//  Se usa FILE_COMMON para que el runner los recoja siempre del mismo
+//  sitio: en el tester los archivos normales caen en el sandbox del
+//  agente (Tester\Agent-xxx\MQL5\Files) y es un lio encontrarlos.
+//--------------------------------------------------------------------
+string BtRuta(const string archivo)
+  {
+   return InpBtCarpeta + "\\" + archivo;
+  }
+
+void BtInit()
+  {
+   g_bt = true;
+   FolderCreate(InpBtCarpeta, FILE_COMMON);
+   g_btHsen = FileOpen(BtRuta("senales.csv"), FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(g_btHsen != INVALID_HANDLE)
+      FileWrite(g_btHsen, "id;time;symbol;tf;code;dir;entry;stop;atr;tipo;h1");
+   for(int tfi = 0; tfi < g_nTf; tfi++)
+     {
+      g_btUltBarra[tfi] = 0;
+      g_btHbar[tfi]     = INVALID_HANDLE;
+      if(!InpBtBarras)
+         continue;
+      g_btHbar[tfi] = FileOpen(BtRuta("barras_" + g_tfTxtArr[tfi] + ".csv"),
+                               FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+      if(g_btHbar[tfi] != INVALID_HANDLE)
+         FileWrite(g_btHbar[tfi], "time;open;high;low;close");
+     }
+   Print("BT: simbolo=", _Symbol, " ventana=", InpBtVentana,
+         " barras=", (InpBtBarras ? "si" : "no"), " -> ", BtRuta("senales.csv"));
+  }
+
+void BtCerrar()
+  {
+   if(g_btHsen != INVALID_HANDLE)
+     {
+      FileClose(g_btHsen);
+      g_btHsen = INVALID_HANDLE;
+     }
+   for(int tfi = 0; tfi < g_nTf; tfi++)
+      if(g_btHbar[tfi] != INVALID_HANDLE)
+        {
+         FileClose(g_btHbar[tfi]);
+         g_btHbar[tfi] = INVALID_HANDLE;
+        }
+  }
+
+// aviso vs entrada: 2/3 (y sus reseteadas) son avisos, todo lo demas entrada
+bool BtEsEntrada(const string p)
+  {
+   if(p == "2"  || p == "3"  || p == "2R"  || p == "3R")  return false;
+   if(p == "2E" || p == "3E" || p == "2RE" || p == "3RE") return false;
+   return true;
+  }
+
+void BtSenal(const string tf, const Evento &ev, const datetime tBarra,
+             const double atr, const string h1)
+  {
+   if(g_btHsen == INVALID_HANDLE)
+      return;
+   g_btEventos++;
+   FileWrite(g_btHsen,
+             IntegerToString(g_btEventos) + ";" +
+             TimeToString(tBarra, TIME_DATE|TIME_MINUTES) + ";" +
+             _Symbol + ";" + tf + ";" + ev.patron + ";" + ev.lado + ";" +
+             DoubleToString(ev.precio, _Digits) + ";" +
+             DoubleToString(ev.invalida, _Digits) + ";" +
+             DoubleToString(atr, _Digits) + ";" +
+             (BtEsEntrada(ev.patron) ? "ENTRADA" : "AVISO") + ";" + h1);
+  }
+
+// Un paso del tester: por cada TF mira si cerro una vela nueva, guarda la
+// barra y escribe las senales de ESA vela (misma logica que Revisar en vivo).
+void BtPaso()
+  {
+   for(int tfi = 0; tfi < g_nTf; tfi++)
+     {
+      g_tf    = g_tfArr[tfi];
+      g_tfTxt = g_tfTxtArr[tfi];
+      g_tfIdx = tfi;
+
+      MqlRates r[];
+      int n = CopyRates(_Symbol, g_tf, 1, InpBtVentana, r);   // 1 = ultima CERRADA
+      if(n < P_emaFondo + 30)
+         continue;
+      datetime tBarra = r[n-1].time;
+      if(tBarra == g_btUltBarra[tfi])
+         continue;
+      g_btUltBarra[tfi] = tBarra;
+
+      if(g_btHbar[tfi] != INVALID_HANDLE)
+         FileWrite(g_btHbar[tfi],
+                   TimeToString(tBarra, TIME_DATE|TIME_MINUTES) + ";" +
+                   DoubleToString(r[n-1].open,  _Digits) + ";" +
+                   DoubleToString(r[n-1].high,  _Digits) + ";" +
+                   DoubleToString(r[n-1].low,   _Digits) + ";" +
+                   DoubleToString(r[n-1].close, _Digits));
+
+      Evento evs[], evsE[];
+      Escanear(r, evs);
+      EscanearEstructura(r, evsE);
+
+      Evento cand[];
+      ArrayResize(cand, 0);
+      int t1 = ArraySize(evs);
+      for(int i = 0; i < t1; i++)
+         if(evs[i].bar == n - 1)
+           {
+            int k = ArraySize(cand);
+            ArrayResize(cand, k + 1);
+            cand[k] = evs[i];
+           }
+      int t2 = ArraySize(evsE);
+      for(int i = 0; i < t2; i++)
+         if(evsE[i].bar == n - 1)
+           {
+            int k = ArraySize(cand);
+            ArrayResize(cand, k + 1);
+            cand[k] = evsE[i];
+           }
+      if(ArraySize(cand) == 0)
+         continue;
+
+      double atr[];
+      CalcAtr(r, P_atrPeriodo, atr);
+      double atrS = atr[n-1];
+
+      datetime tCierre = (datetime)((long)tBarra + (long)PeriodSeconds(g_tf));
+      TendMayor tm = TendenciaMayor(_Symbol, tCierre);
+      string h1 = SufijoTendencia(tm, g_tfTxt);
+
+      // una sola senal por vela y lado: gana la de mayor prioridad
+      for(int lado = 0; lado < 2; lado++)
+        {
+         string cual = (lado == 0) ? "VENTA" : "COMPRA";
+         int mejor = -1;
+         int nc = ArraySize(cand);
+         for(int i = 0; i < nc; i++)
+           {
+            if(cand[i].lado != cual)
+               continue;
+            if(mejor < 0 || Prioridad(cand[i].patron) > Prioridad(cand[mejor].patron))
+               mejor = i;
+           }
+         if(mejor < 0)
+            continue;
+         Evento ev = cand[mejor];
+         // mismo veto que en vivo: H1 en contra bloquea (M3 solo avisa)
+         if(tm.ok && tm.tendencia != "RANGO")
+           {
+            bool contra = (ev.lado == "VENTA"  && tm.tendencia == "ALCISTA")
+                       || (ev.lado == "COMPRA" && tm.tendencia == "BAJISTA");
+            if(contra && g_tfTxt != "M3")
+               continue;
+           }
+         BtSenal(g_tfTxt, ev, tBarra, atrS, h1);
+        }
+     }
+  }
+
+//--------------------------------------------------------------------
 //  Arranque
 //--------------------------------------------------------------------
 int OnInit()
@@ -1292,6 +1477,14 @@ int OnInit()
    g_tfTxtArr[3] = "M30"; g_tfArr[3] = PERIOD_M30;
    g_tfTxt = g_tfTxtArr[1];   // default para logs
    g_tf    = g_tfArr[1];
+
+   // Modo backtest: no hay cuenta, ni Telegram, ni timer. El tester empuja
+   // vela a vela por OnTick y todo sale a CSV.
+   if(InpBacktest || MQLInfoInteger(MQL_TESTER) != 0)
+     {
+      BtInit();
+      return(INIT_SUCCEEDED);
+     }
 
    long login     = AccountInfoInteger(ACCOUNT_LOGIN);
    string servidor = AccountInfoString(ACCOUNT_SERVER);
@@ -1372,7 +1565,20 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   if(g_bt)
+     {
+      BtCerrar();
+      Print("BT: fin, ", g_btEventos, " senales escritas");
+     }
    Log("EA detenido (reason " + IntegerToString(reason) + ")");
+  }
+
+// En vivo el EA trabaja con OnTimer; en el tester los timers no existen y
+// el pulso lo da OnTick (una vez por barra M1 con Model=1).
+void OnTick()
+  {
+   if(g_bt)
+      BtPaso();
   }
 
 void OnTimer()

@@ -1,0 +1,158 @@
+name: MT5 backtest
+# Corre el EA en el Strategy Tester de MT5 y saca los CSV de senales y de
+# barras. El analisis (SL amplio / TP 1.5R / TL) lo hace Python: un solo
+# pase de MT5 sirve para barrer todos los TP y TL.
+#
+# Uso: Actions -> "MT5 backtest" -> Run workflow.
+#   simbolos: "SFX Vol 20"                  (una o varias, separadas por coma)
+#   periodos: "M3"                          (M3,M5,M15,M30)
+#   desde/hasta vacios = ultimos 90 dias
+#
+# Historial: el tester NO avisa si le pides mas velas de las que el broker
+# tiene. bt.ps1 imprime la cobertura real en el paso "Backtest".
+on:
+  workflow_dispatch:
+    inputs:
+      simbolos:
+        description: "Simbolos separados por coma"
+        default: "SFX Vol 20"
+        required: true
+      periodos:
+        description: "Temporalidades (M3,M5,M15,M30)"
+        default: "M3"
+        required: true
+      desde:
+        description: "Desde (YYYY.MM.DD). Vacio = 90 dias atras"
+        default: ""
+      hasta:
+        description: "Hasta (YYYY.MM.DD). Vacio = hoy"
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  MT5_DIR: C:\Program Files\MetaTrader 5
+
+jobs:
+  prep:
+    name: matriz
+    runs-on: ubuntu-latest
+    outputs:
+      matriz: ${{ steps.m.outputs.matriz }}
+      desde: ${{ steps.m.outputs.desde }}
+      hasta: ${{ steps.m.outputs.hasta }}
+    steps:
+      - id: m
+        env:
+          S: ${{ inputs.simbolos }}
+          P: ${{ inputs.periodos }}
+          D: ${{ inputs.desde }}
+          H: ${{ inputs.hasta }}
+        run: |
+          desde="$D"; hasta="$H"
+          [ -z "$desde" ] && desde=$(date -d '-90 days' +%Y.%m.%d)
+          [ -z "$hasta" ] && hasta=$(date +%Y.%m.%d)
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          s = [x.strip() for x in os.environ["S"].split(",") if x.strip()]
+          p = [x.strip() for x in os.environ["P"].split(",") if x.strip()]
+          m = [{"simbolo": a, "periodo": b, "slug": a.replace(" ", "_") + "_" + b}
+               for a in s for b in p]
+          print("matriz=" + json.dumps(m))
+          EOF
+          echo "desde=$desde" >> "$GITHUB_OUTPUT"
+          echo "hasta=$hasta" >> "$GITHUB_OUTPUT"
+
+  bt:
+    name: ${{ matrix.slug }}
+    needs: prep
+    runs-on: windows-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.prep.outputs.matriz) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Comprobar secrets
+        shell: pwsh
+        env:
+          S_LOGIN: ${{ secrets.MT5_LOGIN }}
+          S_PASS: ${{ secrets.MT5_PASSWORD }}
+          S_SERVER: ${{ secrets.MT5_SERVER }}
+        run: |
+          $falta = @()
+          if (-not $env:S_LOGIN)  { $falta += 'MT5_LOGIN' }
+          if (-not $env:S_PASS)   { $falta += 'MT5_PASSWORD' }
+          if (-not $env:S_SERVER) { $falta += 'MT5_SERVER' }
+          if ($falta.Count -gt 0) { Write-Host "Faltan secrets: $($falta -join ', ')"; exit 1 }
+          Write-Host 'Secrets cargados.'
+
+      - name: Instalar MT5 y compilar el EA
+        shell: pwsh
+        run: ./mt5-ea/scripts/instalar_mt5.ps1 -Fuente 'mt5-ea/EstrategiaAdversaria.mq5'
+
+      - name: Backtest
+        shell: pwsh
+        env:
+          MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
+          MT5_SERVER: ${{ secrets.MT5_SERVER }}
+        run: |
+          ./mt5-ea/scripts/bt.ps1 -Simbolo '${{ matrix.simbolo }}' `
+            -Periodo '${{ matrix.periodo }}' `
+            -Desde '${{ needs.prep.outputs.desde }}' `
+            -Hasta '${{ needs.prep.outputs.hasta }}' `
+            -Salida 'bt_out'
+
+      - name: Subir CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bt-${{ matrix.slug }}
+          path: bt_out
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Logs del tester
+        if: failure()
+        shell: pwsh
+        run: |
+          $logs = Join-Path $env:MT5_DIR 'config\Tester\logs'
+          Get-ChildItem -LiteralPath $env:MT5_DIR -Recurse -Filter '*.log' -ErrorAction SilentlyContinue |
+            Select-Object -First 5 | ForEach-Object {
+              Write-Host "--- $($_.FullName) ---"
+              Get-Content -LiteralPath $_.FullName -Tail 40
+            }
+
+  report:
+    name: informe
+    needs: bt
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bajar CSV
+        uses: actions/download-artifact@v4
+        with:
+          path: artefactos
+          pattern: bt-*
+
+      - name: Analizar (SL amplio / TP 1.5R / TL)
+        run: python3 bt/analizar_bt.py --entrada artefactos --salida reporte_bt.md
+
+      - name: Resumen
+        run: cat reporte_bt.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Subir informe
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-bt
+          path: reporte_bt.md
+          retention-days: 30
