@@ -195,7 +195,7 @@ string TendenciaTxt(const string t)
   }
 
 // La R es de RESET y va pegada delante de la familia:
-//   Raptor:  1 -> 1R, 2 -> 2R, 3 -> 3R, 2B -> 2RB, 3B -> 3RB
+//   Wonderizada:  1 -> 1R, 2 -> 2R, 3 -> 3R, 2B -> 2RB, 3B -> 3RB
 //   Estructura: 1E -> 1RE, 2E -> 2RE, 3E -> 3RE, 2EB -> 2REB, 3EB -> 3REB
 string ConReset(const string base, const int ciclo)
   {
@@ -832,8 +832,7 @@ string MensajeSenal(const string simbolo, const string tf, const Evento &ev,
    string texto = "";
    texto += Icono(compra) + " <b>" + ev.lado + "</b>\n";
    texto += "<b>1. Activo:</b> " + simbolo + "\n";
-   texto += "<b>2. Temporalidad:</b> " + tf + "\n";
-   string estrategia = (StringFind(ev.patron, "E") >= 0) ? "Estructura" : "Raptor-v03";
+   texto += "<b>2. Temporalidad:</b> " + tf + "\n";    string estrategia = (StringFind(ev.patron, "E") >= 0) ? "Estructura" : "Wonderizada";
    texto += "<b>3. Estrategia:</b> " + patron + " - " + estrategia + "\n";
    texto += "<b>4. Tendencia:</b> " + TendenciaTxt(ev.tendencia) + extraTend + "\n";
    texto += "<b>5. Precio entrada:</b> " + FmtPrecio(ev.precio) + " (vela cerrada)\n";
