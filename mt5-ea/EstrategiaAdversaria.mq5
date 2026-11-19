@@ -77,6 +77,9 @@ bool   P_unaPorSecuencia   = true;
 // true  -> variante: la senal sale solo con cerrar de vuelta por la EMA50,
 //          sin exigir la ruptura del minimo del tramo.
 bool   P_enganoEnEma50     = false;
+// La B de cada toque (1B, 2B, 3B) es el cierre CON CUERPO que rompe el extremo
+// del impulso anterior y sigue: una entrada mas, despues de cada toque.
+bool   P_bPorRuptura       = true;
 
 // Exigir que el tramo del engano haya llegado hasta la EMA100 (enganio
 // profundo) antes de aceptar la vuelta por la EMA50.
@@ -164,6 +167,8 @@ struct Secuencia
    double toco30Extremo;   // punta del retroceso: stop y techo del tramo
    bool   supero;          // entre el toque anterior y este hubo extremo nuevo
    double pico;            // extremo de la pata en curso: "el maximo mas previo"
+   double nivelB;          // la raya que rompe la entrada B de ese toque
+   bool   bHecho;          // la B de ese toque ya se aviso
    Toque  t1, t2, t3;
    int    nT;
    int    ciclo;
@@ -289,6 +294,7 @@ string ConReset(const string base, const int ciclo)
    if(ciclo < 1)
       return base;
    if(base == "1S")  return "1SR";
+   if(base == "1B")  return "1RB";
    if(base == "2")   return "2R";
    if(base == "3")   return "3R";
    if(base == "2B")  return "2RB";
@@ -841,6 +847,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       PushToque(s, t);
       s.toco30 = false;
       s.supero = false;   // el proximo toque vuelve a exigir extremo nuevo
+      s.nivelB = s.pico;  // la raya del impulso que tiene que romper la B
+      s.bHecho = false;
       if(i == g_barraActual)
          g_emb[g_tfIdx].toqW++;
 
@@ -877,6 +885,27 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
             s.avisados = s.nT;   // solo si de verdad se emitio
             s.emitida  = true;
            }
+        }
+     }
+
+   // 3b. La B de cada toque: cierre CON CUERPO que rompe el extremo del
+   //     impulso anterior y continua. Es una entrada adicional a la del
+   //     toque, no la sustituye: despues del 1 va el 1B, del 2 el 2B, etc.
+   if(P_bPorRuptura && s.nT > 0 && !s.bHecho)
+     {
+      double cuerpoB  = MathAbs(c - o);
+      bool   cuerpoBok = (h - l) > 0 && cuerpoB >= P_cuerpoMin * (h - l)
+                         && cuerpoB >= P_cuerpoMinAtr * atrI;
+      bool   rompeB    = venta ? (c < s.nivelB) : (c > s.nivelB);
+      if(rompeB && cuerpoBok)
+        {
+         double stopB = hayUltimo ? ultimo.extremo : s.toco30Extremo;
+         if(i == g_barraActual)
+            g_emb[g_tfIdx].emiW++;
+         Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT) + "B", s.ciclo),
+                c, stopB, s.nivelB, E30, E50, E100, c);
+         s.ultimaEntrada = i;
+         s.bHecho = true;
         }
      }
 
@@ -956,10 +985,13 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       return;
      }
 
-   // la 2B no se opera al cierre: se espera el retesteo del nivel
-   if(base == "2B")
-     {
-      s.retesteo = true;
+   // la 2B no se opera al cierre: se espera el retesteo del nivel    if(base == "2B")
+      {
+       // con P_bPorRuptura la B ya se avisa en la ruptura con cuerpo; este
+       // retesteo queda solo como alternativa apagada.
+       if(P_bPorRuptura)
+          return;
+       s.retesteo = true;
       s.retBar = i;
       s.retNivel = nivelQ;
       s.retExtremo = t4.extremo;
@@ -2011,6 +2043,8 @@ int Prioridad(const string p)
    else if(p == "1SR") { tier = 2; rr =  0.022; }
    else if(p == "1")   { tier = 2; rr =  0.000; }
    else if(p == "1R")  { tier = 2; rr = -0.010; }
+   else if(p == "1B")  { tier = 2; rr = -0.020; }
+   else if(p == "1RB") { tier = 2; rr = -0.030; }
    else if(p == "3B")  { tier = 2; rr =  0.014; }
    else if(p == "2B")  { tier = 1; rr = -0.060; }
    else if(p == "3R")  { tier = 1; rr = -0.161; }
