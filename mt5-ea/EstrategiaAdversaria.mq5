@@ -70,13 +70,13 @@ double P_sepMinE50E100     = 1.0;
 // despues la 2B/3B del mismo movimiento. Ponlo en false para comparar.
 bool   P_unaPorSecuencia   = true;
 
-// Disparo de la vuelta del engano (codigo "1").
-// true  -> la senal sale cuando una vela CIERRA de vuelta a traves de la EMA50
-//          en la direccion de la tendencia: el engano se agoto y la tendencia
-//          sigue. Es la lectura de "rompe la EMA50 y vuelve a entrar".
-// false -> comportamiento viejo: el disparo es el minimo del tramo del engano
-//          (el "cuello"), que llega mas tarde y peor.
-bool   P_enganoEnEma50     = true;
+// Disparo de la vuelta del engano (codigo "1S", la seductora).
+// false -> la seductora ORIGINAL: el precio cierra mas alla de la EMA50
+//          (engaño), vuelve, y la senal es el cierre con cuerpo que rompe el
+//          minimo del tramo del engano. Es el comportamiento por defecto.
+// true  -> variante: la senal sale solo con cerrar de vuelta por la EMA50,
+//          sin exigir la ruptura del minimo del tramo.
+bool   P_enganoEnEma50     = false;
 
 // Exigir que el tramo del engano haya llegado hasta la EMA100 (enganio
 // profundo) antes de aceptar la vuelta por la EMA50.
@@ -162,6 +162,7 @@ struct Secuencia
    bool   toco30;          // el retroceso en curso ya toco la EMA30
    bool   toco30Sobre50;   // y ademas cerro mas alla de la EMA50
    double toco30Extremo;   // punta del retroceso: stop y techo del tramo
+   bool   supero;          // entre el toque anterior y este hubo extremo nuevo
    Toque  t1, t2, t3;
    int    nT;
    int    ciclo;
@@ -746,8 +747,10 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       bool invertida = venta ? (E30 > E50) : (E30 < E50);
       if(invertida)
         {
+         // La R tambien es de reset por CAMBIO DE TENDENCIA: la escalera que
+         // venga cuando la pila vuelva a estar en orden nace reseteada.
          s.nT = 0;
-         s.ciclo = 0;
+         s.ciclo++;
          s.avisados = 0;
          s.emitida  = false;
          s.retesteo = false;
@@ -801,6 +804,14 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       ultimo = UltimoToque(s);
    bool separado = !hayUltimo || (i - ultimo.bar) >= P_separacionToques;
 
+   // El toque nuevo solo vale si ENTRE los dos el precio rompio el extremo del
+   // toque anterior y siguio la tendencia: el toque 1 es el retroceso, y el 2
+   // exige que la tendencia haya avanzado de verdad. Sin el ATR extra que se
+   // exigia antes: basta con superar el extremo previo.
+   if(hayUltimo && (venta ? (l < ultimo.bajo) : (h > ultimo.alto)))
+      s.supero = true;
+   bool supera = !hayUltimo || s.supero;
+
    // por donde tiene que volver: si cerro sobre la EMA50, la 50; si no, la 30
    double nivelVol = s.toco30Sobre50 ? E50 : E30;
    bool deVuelta   = venta ? (c < nivelVol) : (c > nivelVol);
@@ -810,7 +821,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    bool cuerpoOk = (!s.toco30Sobre50) || ((h - l) > 0 && cuerpoVol >= P_cuerpoMin * (h - l)
                                          && cuerpoVol >= P_cuerpoMinAtr * atrI);
 
-   if(s.toco30 && deVuelta && separado && cuerpoOk)
+   if(s.toco30 && deVuelta && separado && cuerpoOk && supera)
      {
       Toque t;
       t.bar     = i;
@@ -820,6 +831,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       t.bajo    = l;
       PushToque(s, t);
       s.toco30 = false;
+      s.supero = false;   // el proximo toque vuelve a exigir extremo nuevo
       if(i == g_barraActual)
          g_emb[g_tfIdx].toqW++;
 
@@ -917,13 +929,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
 
    // Filtros anti-ruido en el quiebre
    int crQ = CrucesEma30(r, e30, i, P_ventanaCruces);
-   // La vuelta del engano se mide en SU tramo (de la ultima vela fuera de la
-   // EMA50 hasta esta), no en la ventana fija: la ventana de 10 velas lleva
-   // dentro el rebote entero y hunde el ER, que es justo lo que bloqueaba la
-   // senal del 19-11 (ER=0.09 en una jugada valida).
-   double erQ = (base == "1S" && s.enganoBar >= 0 && s.enganoBar < i)
-                ? Eficiencia(r, i, MathMax(1, i - s.enganoBar))
-                : ErDelTramo(r, HayToque(s) ? t4.bar : -1, i, P_ventanaER);
+   double erQ = ErDelTramo(r, HayToque(s) ? t4.bar : -1, i, P_ventanaER);
    double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
    double sep2Q = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
    bool bloqueadoQ = false;
