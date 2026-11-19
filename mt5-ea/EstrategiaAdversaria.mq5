@@ -70,6 +70,20 @@ double P_sepMinE50E100     = 1.0;
 // despues la 2B/3B del mismo movimiento. Ponlo en false para comparar.
 bool   P_unaPorSecuencia   = true;
 
+// Disparo de la vuelta del engano (codigo "1").
+// true  -> la senal sale cuando una vela CIERRA de vuelta a traves de la EMA50
+//          en la direccion de la tendencia: el engano se agoto y la tendencia
+//          sigue. Es la lectura de "rompe la EMA50 y vuelve a entrar".
+// false -> comportamiento viejo: el disparo es el minimo del tramo del engano
+//          (el "cuello"), que llega mas tarde y peor.
+bool   P_enganoEnEma50     = true;
+
+// Exigir que el tramo del engano haya llegado hasta la EMA100 (enganio
+// profundo) antes de aceptar la vuelta por la EMA50.
+// OJO: en FX Vol 20 M3 el rebote de las 11:21 toco la EMA30/50 pero NO llego a
+// la EMA100; con esto en true esa senal no habria salido. Por eso va en false.
+bool   P_enganoExigeE100   = false;
+
 datetime g_ultimoLatido = 0;
 int      g_barraActual   = -1;   // solo se loguean los bloqueos de la vela actual
 int      g_tfIdx         = 0;    // temporalidad en curso (0..3), para el embudo
@@ -142,7 +156,9 @@ struct Secuencia
   {
    bool   engano;
    int    enganoBar;
-   double enganoNivel;
+   double enganoNivel;     // minimo/maximo del tramo (el "cuello")
+   double enganoExtremo;   // punta del tramo: stop de la vuelta del engano
+   bool   enganoProfundo;  // el tramo llego hasta la EMA100
    Toque  t1, t2, t3;
    int    nT;
    int    ciclo;
@@ -651,9 +667,22 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
         {
          s.engano = true;
          s.enganoNivel = venta ? l : h;
+         s.enganoExtremo = venta ? h : l;
+         s.enganoProfundo = false;
         }
       else
+        {
          s.enganoNivel = venta ? MathMin(s.enganoNivel, l) : MathMax(s.enganoNivel, h);
+         s.enganoExtremo = venta ? MathMax(s.enganoExtremo, h) : MathMin(s.enganoExtremo, l);
+        }
+      // el tramo llego hasta la EMA100: queda marcado como engano profundo
+      if(venta ? (h >= E100) : (l <= E100))
+        {
+         if(!s.enganoProfundo && i == g_barraActual)
+            Log("[ENGANO] " + (venta?"VENTA":"COMPRA") + " " + g_tfTxt
+                + " profundo: el tramo alcanzo la EMA100, esperando la vuelta por la EMA50");
+         s.enganoProfundo = true;
+        }
       s.enganoBar = i;
       if(s.nT > 0)
         {
@@ -691,6 +720,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.engano = false;
          s.enganoBar = -1;
          s.enganoNivel = 0;
+         s.enganoExtremo = 0;
+         s.enganoProfundo = false;
          return;
         }
       if(!sigueRoto || i - s.retBar > P_caducidadRetesteo)
@@ -717,6 +748,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.engano = false;
          s.enganoBar = -1;
          s.enganoNivel = 0;
+         s.enganoExtremo = 0;
+         s.enganoProfundo = false;
         }
       return;
      }
@@ -834,7 +867,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       base = "3B";
    else if(HayToque(s) && s.nT == 2)
       base = "2B";
-   else if(enganoVivo)
+   else if(enganoVivo && (!P_enganoExigeE100 || s.enganoProfundo))
       base = "1";
    else
       return;                       // sin toque y sin engano: no hay codigo
@@ -849,10 +882,15 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       s.engano = false;
       s.enganoBar = -1;
       s.enganoNivel = 0;
+      s.enganoExtremo = 0;
+      s.enganoProfundo = false;
       return;
      }
 
-   double nivelQ = (base == "1") ? s.enganoNivel : t4.nivel;
+   // base "1" = vuelta del engano. Con P_enganoEnEma50 el disparo es la vela
+   // que CIERRA de vuelta a traves de la EMA50 en la direccion de la tendencia;
+   // si no, el minimo del tramo (el "cuello"), que llega mas tarde y peor.
+   double nivelQ = (base == "1") ? (P_enganoEnEma50 ? E50 : s.enganoNivel) : t4.nivel;
    if(!(nivelQ > 0))
       return;
    bool rompe = venta ? (c < nivelQ) : (c > nivelQ);
@@ -869,7 +907,15 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
 
    // Filtros anti-ruido en el quiebre
    int crQ = CrucesEma30(r, e30, i, P_ventanaCruces);
-   double erQ = ErDelTramo(r, HayToque(s) ? t4.bar : -1, i, P_ventanaER);    double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;    double sep2Q = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
+   // La vuelta del engano se mide en SU tramo (de la ultima vela fuera de la
+   // EMA50 hasta esta), no en la ventana fija: la ventana de 10 velas lleva
+   // dentro el rebote entero y hunde el ER, que es justo lo que bloqueaba la
+   // senal del 19-11 (ER=0.09 en una jugada valida).
+   double erQ = (base == "1" && s.enganoBar >= 0 && s.enganoBar < i)
+                ? Eficiencia(r, i, MathMax(1, i - s.enganoBar))
+                : ErDelTramo(r, HayToque(s) ? t4.bar : -1, i, P_ventanaER);
+   double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
+   double sep2Q = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
    bool bloqueadoQ = false;
    string motivoQ = "";
    if(crQ >= P_minCrucesBloqueo) { bloqueadoQ = true; motivoQ = motivoQ + " cruces=" + IntegerToString(crQ); }
@@ -894,7 +940,13 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       return;
      }
 
-   Emitir(eventos, i, venta, ConReset(base, s.ciclo), c, t4.extremo, nivelQ, E30, E50, E100, c);
+   // el stop de la vuelta del engano es la PUNTA del tramo; el extremo del
+   // toque vale 0 cuando nT==0 y dejaba la invalidacion en el precio 0.
+   double invalidaQ = (base == "1") ? s.enganoExtremo : t4.extremo;
+   if(!(invalidaQ > 0))
+      return;
+
+   Emitir(eventos, i, venta, ConReset(base, s.ciclo), c, invalidaQ, nivelQ, E30, E50, E100, c);
    s.ultimaEntrada = i;
    s.ciclo++;
    s.nT = 0;
@@ -903,6 +955,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    s.engano = false;
    s.enganoBar = -1;
    s.enganoNivel = 0;
+   s.enganoExtremo = 0;
+   s.enganoProfundo = false;
   }
 
 //--------------------------------------------------------------------
