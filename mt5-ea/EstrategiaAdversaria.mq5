@@ -187,18 +187,24 @@ string TendenciaTxt(const string t)
    return "LATERAL (precio y EMAs no alineados)";
   }
 
-// La R es de RESET y va pegada delante de la familia: 1 -> 1R, 2B -> 2RB.
+// La R es de RESET y va pegada delante de la familia:
+//   Raptor:  1 -> 1R, 2 -> 2R, 3 -> 3R, 2B -> 2RB, 3B -> 3RB
+//   Estructura: 1E -> 1RE, 2E -> 2RE, 3E -> 3RE, 2EB -> 2REB, 3EB -> 3REB
 string ConReset(const string base, const int ciclo)
   {
    if(ciclo < 1)
       return base;
-   if(base == "1")
-      return "1R";
-   if(base == "2B")
-      return "2RB";
-   if(base == "3B")
-      return "3RB";
-   return base + "R";     // 2 -> 2R · 3 -> 3R
+   if(base == "1")   return "1R";
+   if(base == "2")   return "2R";
+   if(base == "3")   return "3R";
+   if(base == "2B")  return "2RB";
+   if(base == "3B")  return "3RB";
+   if(base == "1E")  return "1RE";
+   if(base == "2E")  return "2RE";
+   if(base == "3E")  return "3RE";
+   if(base == "2EB") return "2REB";
+   if(base == "3EB") return "3REB";
+   return base + "R";
   }
 
 //--------------------------------------------------------------------
@@ -359,8 +365,6 @@ bool CargarCfg(const string archivo)
          g_tgChat = v;
       else if(k == "simbolos")
          g_simbolos = v;
-      else if(k == "tf")
-         g_tfTxt = v;
       else if(k == "velas")
          g_velas = (int)StringToInteger(v);
       else if(k == "latido")
@@ -369,7 +373,6 @@ bool CargarCfg(const string archivo)
          g_enviarPrecios = (int)StringToInteger(v);
      }
    FileClose(h);
-   g_tf = TfDeTexto(g_tfTxt);
    return true;
   }
 
@@ -483,7 +486,7 @@ void PushToque(Secuencia &s, const Toque &t)
 //--------------------------------------------------------------------
 void Emitir(Evento &eventos[], const int i, const bool venta, const string patron,
             const double precio, const double invalida, const double nivel,
-            const double E30, const double E50, const double E100)
+            const double E30, const double E50, const double E100, const double cierre)
   {
    Evento ev;
    ev.bar       = i;
@@ -492,7 +495,7 @@ void Emitir(Evento &eventos[], const int i, const bool venta, const string patro
    ev.precio    = precio;
    ev.invalida  = invalida;
    ev.nivel     = nivel;
-   ev.tendencia = Tendencia(precio, E30, E50, E100);
+   ev.tendencia = Tendencia(cierre, E30, E50, E100);
    int t = ArraySize(eventos);
    ArrayResize(eventos, t + 1);
    eventos[t] = ev;
@@ -536,17 +539,15 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       bool sigueRoto = venta ? (c < s.retNivel) : (c > s.retNivel);
       if(prueba && sigueRoto)
         {
-         bool alineadaAhora = venta ? (c < E30 && E30 <= E50 && E50 <= E100)
-                                    : (c > E30 && E30 >= E50 && E50 >= E100);
+         bool alineadaAhora = venta ? (c < E30 && E30 <= E50 && E50 <= E100 && (E50 - E30) >= 0.15 * atrI)
+                                    : (c > E30 && E30 >= E50 && E50 >= E100 && (E30 - E50) >= 0.15 * atrI);
          if(!alineadaAhora)
            {
             s.retesteo = false;
             return;
            }
-         if(i - s.ultimaEntrada < P_cooldownEntrada)
-            return;
          Emitir(eventos, i, venta, ConReset("2B", s.ciclo), c, s.retExtremo, s.retNivel,
-                E30, E50, E100);
+                E30, E50, E100, c);
          s.ultimaEntrada = i;
          s.ciclo++;
          s.nT = 0;
@@ -564,8 +565,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
      }
 
    // 2. la pila EMA tiene que estar alineada en el sentido de la jugada
-   bool alineada = venta ? (c < E30 && E30 <= E50 && E50 <= E100)
-                         : (c > E30 && E30 >= E50 && E50 >= E100);
+   bool alineada = venta ? (c < E30 && E30 <= E50 && E50 <= E100 && (E50 - E30) >= 0.15 * atrI)
+                         : (c > E30 && E30 >= E50 && E50 >= E100 && (E30 - E50) >= 0.15 * atrI);
    if(!alineada)
      {
       bool invertida = venta ? (E30 > E50) : (E30 < E50);
@@ -584,8 +585,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
 
    // 3. toque a la EMA30 que NO supera la EMA50
    bool toca = venta
-               ? (extremo >= E30 - P_tolToqueAtr * atrI && extremo <= E50 && c < E30)
-               : (extremo <= E30 + P_tolToqueAtr * atrI && extremo >= E50 && c > E30);
+               ? (extremo >= E30 - P_tolToqueAtr * atrI && c < E30)
+               : (extremo <= E30 + P_tolToqueAtr * atrI && c > E30);
    bool hayUltimo = HayToque(s);
    Toque ultimo;
    ZeroMemory(ultimo);
@@ -643,29 +644,34 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.avisados = s.nT;
          // Precio de entrada = extremo del toque (mecha), no el cierre: la senal
          // sale mas cerca del nivel real del toque y no arrastra el cierre posterior.
-         Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), extremo, extremo, nivel,
-                E30, E50, E100);
+         Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c, extremo, nivel,
+                E30, E50, E100, c);
          s.ultimaEntrada = i;
         }
      }
 
    // 4. quiebre: cierre mas alla del nivel, dentro de la caducidad del toque
-   if(!HayToque(s))
-      return;
-   Toque t4 = UltimoToque(s);
-   if(i <= t4.bar || (i - t4.bar) > P_caducidad)
-      return;
-
    bool enganoVivo = s.engano && (i - s.enganoBar) <= P_caducidadEngano;
+   if(!HayToque(s) && !enganoVivo)
+      return;
+   Toque t4;
+   ZeroMemory(t4);
+   if(HayToque(s))
+     {
+      t4 = UltimoToque(s);
+      if(i <= t4.bar || (i - t4.bar) > P_caducidad)
+         return;
+     }
+
    string base = "";
-   if(s.nT >= 3)
+   if(HayToque(s) && s.nT >= 3)
       base = "3B";
-   else if(s.nT == 2)
+   else if(HayToque(s) && s.nT == 2)
       base = "2B";
    else if(enganoVivo)
       base = "1";
    else
-      return;                       // primer toque sin engano: no hay codigo
+      return;                       // sin toque y sin engano: no hay codigo
 
    double nivelQ = (base == "1") ? s.enganoNivel : t4.nivel;
    if(!(nivelQ > 0))
@@ -679,6 +685,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    double rango  = h - l;
    if(!(rango > 0) || (cuerpo / rango) < P_cuerpoMin || cuerpo < P_cuerpoMinAtr * atrI)
       return;
+   if(cuerpo > 3.0 * atrI)
+      return;   // vela gigante: esperar micro-retroceso
 
    // la 2B no se opera al cierre: se espera el retesteo del nivel
    if(base == "2B")
@@ -690,10 +698,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       return;
      }
 
-   if((i - s.ultimaEntrada) < P_cooldownEntrada)
-      return;
-
-   Emitir(eventos, i, venta, ConReset(base, s.ciclo), c, t4.extremo, nivelQ, E30, E50, E100);
+   Emitir(eventos, i, venta, ConReset(base, s.ciclo), c, t4.extremo, nivelQ, E30, E50, E100, c);
    s.ultimaEntrada = i;
    s.ciclo++;
    s.nT = 0;
@@ -885,8 +890,8 @@ void Revisar(const int idx)
            }
 
       long offServidor = (long)TimeTradeServer() - (long)TimeGMT();
-      datetime tVelaUTC = (datetime)((long)ultima - offServidor);
       datetime tCierre  = (datetime)((long)ultima + (long)PeriodSeconds(g_tf));
+      datetime tCierreUTC = (datetime)((long)tCierre - offServidor);
 
       // una sola senal por vela y lado: gana la de mayor prioridad
       for(int lado = 0; lado < 2; lado++)
@@ -912,7 +917,19 @@ void Revisar(const int idx)
 
          TendMayor tm = TendenciaMayor(g_est[idx].nombre, tCierre);
          string extra = SufijoTendencia(tm, g_tfTxt);
-         string texto = MensajeSenal(g_est[idx].nombre, g_tfTxt, ev, tVelaUTC, extra);
+         // Filtro: H1 en contra bloquea la senal (no solo la comenta)
+         if(tm.ok && tm.tendencia != "RANGO")
+           {
+            bool contra = (ev.lado == "VENTA"  && tm.tendencia == "ALCISTA")
+                       || (ev.lado == "COMPRA" && tm.tendencia == "BAJISTA");
+            if(contra)
+              {
+               Log("[FILTRO H1] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt
+                   + " bloqueado por H1 " + tm.tendencia);
+               continue;
+              }
+           }
+         string texto = MensajeSenal(g_est[idx].nombre, g_tfTxt, ev, tCierreUTC, extra);
          Log("[SENAL] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt + " "
              + ev.patron + " precio=" + FmtPrecio(ev.precio) + extra);
          if(EnviarTelegram(texto))
@@ -1259,11 +1276,11 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
          if(rompe)
            {
             string base = (s.nT >= 3) ? "3EB" : ((s.nT == 2) ? "2EB" : "1E");
-            bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i])
-                                  : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i]);
+            bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= 0.15*atr[i])
+                                  : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= 0.15*atr[i]);
             if(alineada)
                Emitir(eventos, i, venta, ConReset(base, s.ciclo), cierre, t.extremo, t.nivel,
-                      e30[i], e50[i], e100[i]);
+                      e30[i], e50[i], e100[i], cierre);
             s.ciclo++;
             s.ultimaEntradaBar = i;
             s.nT = 0;
@@ -1340,11 +1357,11 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
       if(s.nT >= 2)
         {
          string codigo = (s.nT == 2) ? ConReset("2E", s.ciclo) : ConReset("3E", s.ciclo);
-         bool alineada = venta ? (r[i].close < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i])
-                               : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i]);
+         bool alineada = venta ? (r[i].close < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= 0.15*atr[i])
+                               : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= 0.15*atr[i]);
          if(alineada)
             Emitir(eventos, i, venta, codigo, r[i].close, contacto, nivelQuiebre,
-                   e30[i], e50[i], e100[i]);
+                   e30[i], e50[i], e100[i], r[i].close);
         }
      }
   }
