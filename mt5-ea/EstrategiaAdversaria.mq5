@@ -59,7 +59,11 @@ int    P_ventanaCruces     = 12;
 int    P_minCrucesBloqueo  = 4;
 int    P_ventanaER         = 10;    // ventana corta: el ER de 20 castiga el retroceso
 double P_erMinToque        = 0.18;
-double P_erMinQuiebre      = 0.22;
+// 0.22 medido en M3 sobre la vela del quiebre es inalcanzable: el quiebre
+// llega justo despues del retroceso y esa ventana de 10 velas lleva dentro
+// el retroceso, asi que el ER se hunde. Caso real bloqueado: ER=0.18 con
+// cruces=0 y separaciones 1.14/2.89 (nada mas fallaba).
+double P_erMinQuiebre      = 0.15;
 double P_sepMinE30E50      = 0.5;
 double P_sepMinE50E100     = 1.0;
 // Una sola entrada por secuencia: si ya salio la 2 (o la 3), no se emite
@@ -68,6 +72,59 @@ bool   P_unaPorSecuencia   = true;
 
 datetime g_ultimoLatido = 0;
 int      g_barraActual   = -1;   // solo se loguean los bloqueos de la vela actual
+int      g_tfIdx         = 0;    // temporalidad en curso (0..3), para el embudo
+
+//--------------------------------------------------------------------
+//  Embudo por temporalidad: cuantos candidatos mueren en cada puerta de
+//  la vela cerrada. Se acumula y se imprime una vez por vela M3 cerrada.
+//  Sin esto el log solo enseña los candidatos que llegaron a la ultima
+//  puerta; el resto desaparece sin rastro.
+//  En Estructura el reparto es exacto y suma lo mismo que "rompe":
+//     rompe = noAlinE + blqCruz + blqER + yaLa + emi
+//--------------------------------------------------------------------
+struct Emb
+  {
+   int tocaW;      // Wonderizada: velas alineadas que tocaron la EMA30
+   int noAlinW;    // Wonderizada: velas que murieron en la pila EMA
+   int toqW;       // Wonderizada: toques que entraron en la escalera
+   int blqW;       // Wonderizada: toque 2/3 frenado por cruces o ER
+   int emiW;       // Wonderizada: toque 2/3 que salio
+   int imp;        // Estructura: impulsos detectados
+   int noAlinE;    // Estructura: quiebres con la pila sin alinear
+   int toq;        // Estructura: toques de retroceso validos
+   int rompe;      // Estructura: quiebres vistos
+   int blqCruz;    // Estructura: bloqueados por cruces
+   int blqER;      // Estructura: bloqueados por ER
+   int yaLa;       // Estructura: suprimidos por una-por-secuencia
+   int emi;        // Estructura: quiebres que salieron
+  };
+Emb      g_emb[4];
+datetime g_embBar = 0;
+
+void EmbLog()
+  {
+   int nt = ArraySize(g_tfTxtArr);
+   for(int k = 0; k < 4; k++)
+     {
+      Emb e = g_emb[k];
+      if(e.tocaW + e.noAlinW + e.toqW + e.blqW + e.emiW + e.imp + e.noAlinE
+         + e.toq + e.rompe + e.blqCruz + e.blqER + e.yaLa + e.emi == 0)
+         continue;
+      string tf = IntegerToString(k);
+      if(k < nt)
+         tf = g_tfTxtArr[k];
+      Log("[EMBUDO] " + tf
+          + " W{toca=" + IntegerToString(e.tocaW) + " noAlin=" + IntegerToString(e.noAlinW)
+          + " toques=" + IntegerToString(e.toqW) + " bloquea=" + IntegerToString(e.blqW)
+          + " emite=" + IntegerToString(e.emiW) + "}"
+          + " E{imp=" + IntegerToString(e.imp) + " noAlin=" + IntegerToString(e.noAlinE)
+          + " toques=" + IntegerToString(e.toq) + " rompe=" + IntegerToString(e.rompe)
+          + " cruz=" + IntegerToString(e.blqCruz) + " ER=" + IntegerToString(e.blqER)
+          + " yaLa=" + IntegerToString(e.yaLa) + " emite=" + IntegerToString(e.emi) + "}");
+     }
+   for(int k = 0; k < 4; k++)
+      ZeroMemory(g_emb[k]);
+  }
 
 //--------------------------------------------------------------------
 //  Estructuras
@@ -647,6 +704,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
                          : (c > E30 && E30 >= E50 && E50 >= E100 && (E30 - E50) >= P_sepMinE30E50 * atrI && (E50 - E100) >= P_sepMinE50E100 * atrI);
    if(!alineada)
      {
+      if(i == g_barraActual)
+         g_emb[g_tfIdx].noAlinW++;
       bool invertida = venta ? (E30 > E50) : (E30 < E50);
       if(invertida)
         {
@@ -666,6 +725,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    bool toca = venta
                ? (extremo >= E30 - P_tolToqueAtr * atrI && c < E30)
                : (extremo <= E30 + P_tolToqueAtr * atrI && c > E30);
+   if(i == g_barraActual && toca)
+      g_emb[g_tfIdx].tocaW++;
    bool hayUltimo = HayToque(s);
    Toque ultimo;
    ZeroMemory(ultimo);
@@ -716,6 +777,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       t.alto    = h;
       t.bajo    = l;
       PushToque(s, t);
+      if(i == g_barraActual)
+         g_emb[g_tfIdx].toqW++;
 
       // la 2 y la 3 son senales: el toque se entrega como entrada
       if(s.nT >= 2 && s.avisados != s.nT)
@@ -734,11 +797,16 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          if(bloqueado)
            {
             if(i == g_barraActual)
+              {
+               g_emb[g_tfIdx].blqW++;
                Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque" + IntegerToString(s.nT)
                    + " " + g_tfTxt + " bloqueado:" + motivo);
+              }
            }
          else
            {
+            if(i == g_barraActual)
+               g_emb[g_tfIdx].emiW++;
             Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c, extremo, nivel,
                    E30, E50, E100, c);
             s.ultimaEntrada = i;
@@ -913,12 +981,16 @@ void MarcarEnviada(const string clave)
    int n = ArraySize(g_enviadas);
    ArrayResize(g_enviadas, n + 1);
    g_enviadas[n] = clave;
-   if(n > 2000)
+   if(n >= 2000)
      {
+      // Topar la lista EN MEMORIA tambien: antes solo se recortaba el archivo
+      // y g_enviadas crecia sin limite (YaEnviada es una busqueda lineal).
+      ArrayRemove(g_enviadas, 0, n - 999);   // deja las 1000 ultimas + esta
       int h0 = FileOpen("adv_enviados.txt", FILE_WRITE|FILE_TXT|FILE_ANSI);
       if(h0 != INVALID_HANDLE)
         {
-         for(int i = n - 1000; i <= n; i++)
+         int m = ArraySize(g_enviadas);
+         for(int i = 0; i < m; i++)
             FileWrite(h0, g_enviadas[i]);
          FileClose(h0);
         }
@@ -975,6 +1047,14 @@ void Revisar(const int idx)
      {
       g_tf    = g_tfArr[tfi];
       g_tfTxt = g_tfTxtArr[tfi];
+      g_tfIdx = tfi;
+
+      // Chequeo barato antes de copiar: si la vela en formacion no cambio, no
+      // cerro nada nuevo. Antes se copiaban 3000 velas x 4 TF x 4 simbolos
+      // cada 10 s aunque no hubiera barra nueva.
+      datetime formando = iTime(g_est[idx].nombre, g_tf, 0);
+      if(formando > 0 && formando == g_est[idx].ultimaBarra[tfi])
+         continue;
 
       MqlRates r[];
       int n = CopyRates(g_est[idx].nombre, g_tf, 1, g_velas, r);
@@ -989,10 +1069,10 @@ void Revisar(const int idx)
          continue;
         }
       g_est[idx].avisado = false;
+      // se guarda la vela en formacion: si sigue igual, no hay nada nuevo
+      if(formando > 0)
+         g_est[idx].ultimaBarra[tfi] = formando;
       datetime ultima = r[n-1].time;
-      if(ultima == g_est[idx].ultimaBarra[tfi])
-         continue;
-      g_est[idx].ultimaBarra[tfi] = ultima;
 
       Evento evs[], evsE[];
       Escanear(r, evs);
@@ -1141,6 +1221,7 @@ int OnInit()
    Log("Vigilando " + IntegerToString(ArraySize(g_est)) + " simbolos en [" + tfLista + "]"
        + " (" + IntegerToString(g_velas) + " velas)" + " | Telegram: "
        + ((g_tgToken != "" && g_tgChat != "") ? "configurado" : "SIN CONFIGURAR"));
+   EcoParametros();
 
    long offServidor = (long)TimeTradeServer() - (long)TimeGMT();
    Log("Desfase del servidor respecto a UTC: " + IntegerToString((int)(offServidor / 3600)) + " h");
@@ -1179,6 +1260,20 @@ void OnDeinit(const int reason)
 
 void OnTimer()
   {
+   // Embudo: una linea por vela M3 cerrada con lo acumulado de todos los
+   // simbolos. Se imprime aqui y no dentro de Revisar porque los contadores
+   // son globales y Revisar corre una vez por simbolo.
+   if(ArraySize(g_est) > 0 && StringLen(g_est[0].nombre) > 0)
+     {
+      datetime b3 = iTime(g_est[0].nombre, PERIOD_M3, 0);
+      if(b3 > 0 && b3 != g_embBar)
+        {
+         if(g_embBar != 0)
+            EmbLog();
+         g_embBar = b3;
+        }
+     }
+
    int n = ArraySize(g_est);
    for(int i=0; i<n; i++)
       Revisar(i);
@@ -1234,11 +1329,51 @@ double P_estImpulsoMinAtr   = 0.8;
 int    P_estMinVelasImpulso = 2;
 int    P_estMaxVelasImpulso = 3;
 double P_estCuerpoImpulso   = 0.35;
-int    P_estVentana         = 20;
-double P_estRetrocesoMinAtr = 1.0;
+// 20 velas = "el extremo del impulso tiene que ser el extremo de la ultima
+// hora" en M3. Ningun impulso de 2-3 velas sobrevive a eso: en la practica
+// la estrategia casi no llegaba a tener impulso. 8 velas mantiene la idea
+// (el extremo sigue siendo el del tramo reciente) sin bloquearla.
+int    P_estVentana         = 8;
+// El retroceso no puede pasarse del origen del impulso (enRetroceso exige
+// extremo <= impulsoOrigen), asi que la retraccion maxima posible es la
+// ALTURA de la pierna. Con impulsoMinAtr=0.8 y retrocesoMin=1.0 el minimo
+// quedaba POR ENCIMA del maximo alcanzable: cualquier pierna de 0.8 a 1.0
+// ATR no podia generar toque nunca. 0.6 ATR abre la banda de verdad.
+double P_estRetrocesoMinAtr = 0.6;
 double P_estRetrocesoMaxAtr = 3.0;
 int    P_estCaducidad       = 30;
-int    P_estEspera          = 30;
+// 30 velas de espera en M3 son 90 minutos de silencio despues de CADA
+// entrada de Estructura. Es el mayor supresor de la estrategia.
+int    P_estEspera          = 10;
+
+//--------------------------------------------------------------------
+//  Los parametros estan en VELAS, y la misma cifra son minutos distintos
+//  segun la temporalidad. Esto se imprime al arrancar para no calibrar a
+//  ciegas: "espera=10 velas" son 30 min en M3 y 5 horas en M30.
+//--------------------------------------------------------------------
+void EcoParametros()
+  {
+   for(int t = 0; t < g_nTf; t++)
+     {
+      ENUM_TIMEFRAMES tf = g_tfArr[t];
+      string linea = "[EFECTIVO] " + g_tfTxtArr[t]
+                     + " W{caducidad=" + IntegerToString(P_caducidad) + "v"
+                     + " engano=" + IntegerToString(P_caducidadEngano) + "v"
+                     + " cooldown=" + IntegerToString(P_cooldownEntrada) + "v"
+                     + " cruces=" + IntegerToString(P_ventanaCruces) + "v"
+                     + " ER=" + IntegerToString(P_ventanaER) + "v}"
+                     + " E{ventana=" + IntegerToString(P_estVentana) + "v"
+                     + " caducidad=" + IntegerToString(P_estCaducidad) + "v"
+                     + " espera=" + IntegerToString(P_estEspera) + "v}";
+      int mCad = (PeriodSeconds(tf) * P_caducidad) / 60;
+      int mEr  = (PeriodSeconds(tf) * P_estEspera) / 60;
+      int mVen = (PeriodSeconds(tf) * P_estVentana) / 60;
+      Log(linea + "  -> cada vela = " + IntegerToString(PeriodSeconds(tf) / 60)
+          + " min | caducidad W = " + IntegerToString(mCad)
+          + " min | espera E = " + IntegerToString(mEr)
+          + " min | ventana E = " + IntegerToString(mVen) + " min");
+     }
+  }
 
 struct SecuenciaE
   {
@@ -1365,6 +1500,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
                     const double &atr[], SecuenciaE &s, Evento &eventos[])
   {
    double atrI = atr[i];
+   bool   actE = (i == g_barraActual);   // solo la vela cerrada mueve el embudo
    double cierre = r[i].close;
    double extremo = venta ? r[i].high : r[i].low;
 
@@ -1375,6 +1511,8 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
       Impulso imp = DetectarImpulso(r, i, venta, atr);
       if(imp.ok)
         {
+         if(actE)
+            g_emb[g_tfIdx].imp++;
          s.impulso = true;
          s.impulsoBar = i;
          s.impulsoOrigen = imp.origen;
@@ -1425,6 +1563,8 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
          bool rompe = (t.nivel > 0) && (venta ? (cierre < t.nivel) : (cierre > t.nivel));
          if(rompe)
            {
+            if(actE)
+               g_emb[g_tfIdx].rompe++;
             string base = (s.nT >= 3) ? "3EB" : ((s.nT == 2) ? "2EB" : "1E");
             bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= P_sepMinE30E50*atr[i] && (e100[i]-e50[i]) >= P_sepMinE50E100*atr[i])
                                   : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
@@ -1433,6 +1573,15 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
             // la separacion ya vive dentro de "alineada": aqui solo se mide
             bool bloqueadoE = (crE >= P_minCrucesBloqueo) || (erE < P_erMinQuiebre);
             bool yaEmitidaE = P_unaPorSecuencia && s.emitida && (base != "1E");
+            // reparto exacto: cada quiebre cae en una sola de estas ramas
+            if(actE)
+              {
+               if(!alineada)                      g_emb[g_tfIdx].noAlinE++;
+               else if(crE >= P_minCrucesBloqueo) g_emb[g_tfIdx].blqCruz++;
+               else if(erE < P_erMinQuiebre)      g_emb[g_tfIdx].blqER++;
+               else if(yaEmitidaE)                g_emb[g_tfIdx].yaLa++;
+               else                               g_emb[g_tfIdx].emi++;
+              }
             if(alineada && !bloqueadoE && !yaEmitidaE)
               {
                Emitir(eventos, i, venta, ConReset(base, s.ciclo), cierre, t.extremo, t.nivel,
@@ -1441,15 +1590,24 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
                s.ciclo++;              // el reset solo avanza si de verdad hubo senal
                s.ultimaEntradaBar = i;
               }
-            if(bloqueadoE && alineada && i == g_barraActual)
-               Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura quiebre " + g_tfTxt
-                   + " bloqueado: cruces=" + IntegerToString(crE) + " ER=" + DoubleToString(erE,2)
-                   + " sep=" + DoubleToString(sep1E,2) + "/" + DoubleToString(sep2E,2));
+            // antes se logueaba solo si la pila estaba alineada y se imprimian
+            // los tres campos siempre, asi que no se sabia cual habia fallado.
+            if(actE)
+              {
+               string motivoE = "";
+               if(!alineada)                      motivoE += " pila-no-alineada";
+               if(crE >= P_minCrucesBloqueo)      motivoE += " cruces=" + IntegerToString(crE);
+               if(erE < P_erMinQuiebre)           motivoE += " ER=" + DoubleToString(erE,2);
+               if(yaEmitidaE)                     motivoE += " ya-lanzada";
+               if(StringLen(motivoE) > 0)
+                  Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura quiebre " + g_tfTxt
+                      + " bloqueado:" + motivoE + " (sep=" + DoubleToString(sep1E,2) + "/"
+                      + DoubleToString(sep2E,2) + ")");
+              }
+            // Un quiebre bloqueado ya no tira la secuencia entera (Wonderizada
+            // reintenta el toque siguiente): se descarta el toque y se deja
+            // vivo el impulso, con su extremo, para que se forme otro retroceso.
             s.nT = 0;
-            s.impulso = false;
-            s.impulsoBar = -1;
-            s.impulsoOrigen = 0;
-            s.impulsoExtremo = 0;
             s.tienePico = false;
             return;
            }
@@ -1504,6 +1662,8 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
 
    if(nuevoToque)
      {
+      if(actE)
+         g_emb[g_tfIdx].toq++;
       double nivelQuiebre = s.impulsoExtremo;
       double contacto = s.pico;
       Toque nt;
@@ -1528,7 +1688,9 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
            {
             Emitir(eventos, i, venta, codigo, r[i].close, contacto, nivelQuiebre,
                    e30[i], e50[i], e100[i], r[i].close);
-            s.emitida = true;
+            // NO se marca s.emitida: la 2E/3E es un aviso, no la entrada. Al
+            // marcarla, P_unaPorSecuencia suprimia el 2EB/3EB (la entrada con
+            // quiebre) de la misma secuencia y la jugada se quedaba sin salida.
            }
          if(bloqueadoE2 && alineada && i == g_barraActual)
             Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura toque " + g_tfTxt
@@ -1563,7 +1725,9 @@ void EscanearEstructura(const MqlRates &r[], Evento &eventos[])
 
    for(int i = P_atrPeriodo; i < n; i++)
      {
-      if(!(atr[i] > 0))
+      // las EMAs valen 0 hasta la vela 100: sin este guard la maquina de
+      // estados arrancaba con EMA=0. Escanear ya lo comprobaba; este no.
+      if(!(atr[i] > 0) || !(e30[i] > 0) || !(e50[i] > 0) || !(e100[i] > 0))
          continue;
       ProcesarBarraE(r, i, true,  e30, e50, e100, atr, venta,  eventos);
       ProcesarBarraE(r, i, false, e30, e50, e100, atr, compra, eventos);
@@ -1743,6 +1907,10 @@ string EstadoH1(const string simbolo)
 //  Prioridad cuando el mismo lado da dos codigos en la misma vela
 //  (port de prioridadEvento: entrada > aviso y tier A > B > C)
 //====================================================================
+// OJO con las dos escalas: 2E/3E devuelven 5/6 y el resto 100+tier*10+rr.
+// No es un error: las dos estrategias nunca tienen el mismo patron, asi que
+// el empate es imposible. La escala baja es intencional (aviso < entrada) y
+// el hueco solo hace obvio que un aviso pierde contra cualquier entrada.
 int Prioridad(const string p)
   {
    if(p == "3E" || p == "3RE")
