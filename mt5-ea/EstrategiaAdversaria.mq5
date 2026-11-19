@@ -689,9 +689,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.avisados = s.nT;
          // Filtros anti-ruido: precio pegado a EMA30
          int cr = CrucesEma30(r, e30, i, P_ventanaCruces);
-         double er = Eficiencia(r, i, P_ventanaER);
-         double sep1 = venta ? (E30 - E50) / atrI : (E50 - E30) / atrI;
-         double sep2 = venta ? (E50 - E100) / atrI : (E100 - E50) / atrI;
+         double er = Eficiencia(r, i, P_ventanaER);          double sep1 = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
+          double sep2 = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
          bool bloqueado = false;
          string motivo = "";
          if(cr >= P_minCrucesBloqueo) { bloqueado = true; motivo = motivo + " cruces=" + IntegerToString(cr); }
@@ -752,9 +751,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
 
    // Filtros anti-ruido en el quiebre
    int crQ = CrucesEma30(r, e30, i, P_ventanaCruces);
-   double erQ = Eficiencia(r, i, P_ventanaER);
-   double sep1Q = venta ? (E30 - E50) / atrI : (E50 - E30) / atrI;
-   double sep2Q = venta ? (E50 - E100) / atrI : (E100 - E50) / atrI;
+   double erQ = Eficiencia(r, i, P_ventanaER);    double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;    double sep2Q = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
    bool bloqueadoQ = false;
    string motivoQ = "";
    if(crQ >= P_minCrucesBloqueo) { bloqueadoQ = true; motivoQ = motivoQ + " cruces=" + IntegerToString(crQ); }
@@ -1359,9 +1356,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
             bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= P_sepMinE30E50*atr[i] && (e100[i]-e50[i]) >= P_sepMinE50E100*atr[i])
                                   : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
             int crE = CrucesEma30(r, e30, i, P_ventanaCruces);
-            double erE = Eficiencia(r, i, P_ventanaER);
-            double sep1E = venta ? (e30[i]-e50[i])/atr[i] : (e50[i]-e30[i])/atr[i];
-            double sep2E = venta ? (e50[i]-e100[i])/atr[i] : (e100[i]-e50[i])/atr[i];
+            double erE = Eficiencia(r, i, P_ventanaER);             double sep1E = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];             double sep2E = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
             bool bloqueadoE = (crE >= P_minCrucesBloqueo) || (erE < P_erMinimo)
                               || (sep1E < P_sepMinE30E50) || (sep2E < P_sepMinE50E100);
             if(alineada && !bloqueadoE)
@@ -1450,9 +1445,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
          bool alineada = venta ? (r[i].close < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= P_sepMinE30E50*atr[i] && (e100[i]-e50[i]) >= P_sepMinE50E100*atr[i])
                                : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
          int crE2 = CrucesEma30(r, e30, i, P_ventanaCruces);
-         double erE2 = Eficiencia(r, i, P_ventanaER);
-         double sep1E2 = venta ? (e30[i]-e50[i])/atr[i] : (e50[i]-e30[i])/atr[i];
-         double sep2E2 = venta ? (e50[i]-e100[i])/atr[i] : (e100[i]-e50[i])/atr[i];
+         double erE2 = Eficiencia(r, i, P_ventanaER);          double sep1E2 = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];          double sep2E2 = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
          bool bloqueadoE2 = (crE2 >= P_minCrucesBloqueo) || (erE2 < P_erMinimo)
                             || (sep1E2 < P_sepMinE30E50) || (sep2E2 < P_sepMinE50E100);
          if(alineada && !bloqueadoE2)
