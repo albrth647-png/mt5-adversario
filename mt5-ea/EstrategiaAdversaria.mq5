@@ -159,6 +159,9 @@ struct Secuencia
    double enganoNivel;     // minimo/maximo del tramo (el "cuello")
    double enganoExtremo;   // punta del tramo: stop de la vuelta del engano
    bool   enganoProfundo;  // el tramo llego hasta la EMA100
+   bool   toco30;          // el retroceso en curso ya toco la EMA30
+   bool   toco30Sobre50;   // y ademas cerro mas alla de la EMA50
+   double toco30Extremo;   // punta del retroceso: stop y techo del tramo
    Toque  t1, t2, t3;
    int    nT;
    int    ciclo;
@@ -283,7 +286,7 @@ string ConReset(const string base, const int ciclo)
   {
    if(ciclo < 1)
       return base;
-   if(base == "1")   return "1R";
+   if(base == "1S")  return "1SR";
    if(base == "2")   return "2R";
    if(base == "3")   return "3R";
    if(base == "2B")  return "2RB";
@@ -657,7 +660,6 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    double c = r[i].close, h = r[i].high, l = r[i].low, o = r[i].open;
    double atrI = atr[i];
    double E30 = e30[i], E50 = e50[i], E100 = e100[i];
-   double extremo = venta ? h : l;
 
    // 1. el precio se salio del techo (EMA50): nace el engano
    bool salio = venta ? (c > E50) : (c < E50);
@@ -684,9 +686,11 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.enganoProfundo = true;
         }
       s.enganoBar = i;
+      // La escalera de toques se reinicia al salir sobre la EMA50, pero el
+      // reset (la R) NO: la R solo se marca cuando la seductora entrega su
+      // senal, que es lo que el propietario llama "hacer el engano".
       if(s.nT > 0)
         {
-         s.ciclo++;
          s.nT = 0;
          s.avisados = 0;
          s.emitida  = false;
@@ -712,7 +716,6 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          Emitir(eventos, i, venta, ConReset("2B", s.ciclo), c, s.retExtremo, s.retNivel,
                 E30, E50, E100, c);
          s.ultimaEntrada = i;
-         s.ciclo++;
          s.nT = 0;
          s.avisados = 0;
          s.emitida  = false;
@@ -730,9 +733,12 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          return;   // esperando la vuelta al nivel: la secuencia no se toca
      }
 
-   // 2. la pila EMA tiene que estar alineada en el sentido de la jugada
-   bool alineada = venta ? (c < E30 && E30 <= E50 && E50 <= E100 && (E50 - E30) >= P_sepMinE30E50 * atrI && (E100 - E50) >= P_sepMinE50E100 * atrI)
-                         : (c > E30 && E30 >= E50 && E50 >= E100 && (E30 - E50) >= P_sepMinE30E50 * atrI && (E50 - E100) >= P_sepMinE50E100 * atrI);
+   // 2. la pila EMA tiene que estar en ORDEN en el sentido de la jugada.
+   //    Sin cierre ni separaciones minimas: el cierre lo exige la vuelta del
+   //    toque (mas abajo) y exigir separacion dejaba la senal muda justo
+   //    despues de un retroceso a la EMA30, que pega la EMA30 a la EMA50.
+   bool alineada = venta ? (E30 <= E50 && E50 <= E100)
+                         : (E30 >= E50 && E50 >= E100);
    if(!alineada)
      {
       if(i == g_barraActual)
@@ -745,6 +751,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.avisados = 0;
          s.emitida  = false;
          s.retesteo = false;
+         s.toco30 = false;
          s.engano = false;
          s.enganoBar = -1;
          s.enganoNivel = 0;
@@ -754,94 +761,97 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       return;
      }
 
-   // 3. toque a la EMA30 que NO supera la EMA50
-   bool toca = venta
-               ? (extremo >= E30 - P_tolToqueAtr * atrI && c < E30)
-               : (extremo <= E30 + P_tolToqueAtr * atrI && c > E30);
-   if(i == g_barraActual && toca)
+   // 3. toque a la EMA30 y vuelta del retroceso.
+   //    Regla del propietario: el retroceso toca la EMA30 (mecha o cuerpo),
+   //    PUEDE superar la EMA50, NUNCA la EMA100, y la senal es la primera vela
+   //    que cierra de vuelta del lado de la tendencia: por la EMA50 si el
+   //    retroceso se salio, por la EMA30 si solo la topo.
+   double tol30 = P_tolToqueAtr * atrI;
+   bool llego30 = venta ? (h >= E30 - tol30) : (l <= E30 + tol30);
+   if(i == g_barraActual && llego30)
       g_emb[g_tfIdx].tocaW++;
+   if(!s.toco30 && llego30)
+     {
+      s.toco30 = true;
+      s.toco30Sobre50 = false;
+      s.toco30Extremo = venta ? h : l;
+     }
+   if(s.toco30)
+     {
+      s.toco30Extremo = venta ? MathMax(s.toco30Extremo, h) : MathMin(s.toco30Extremo, l);
+      // "la cruce con cuerpo": un cierre mas alla de la EMA50 marca el techo
+      if(venta ? (c > E50) : (c < E50))
+         s.toco30Sobre50 = true;
+     }
+
+   // techo duro: si el retroceso alcanza la EMA100 la jugada no existe
+   if(s.toco30 && (venta ? (h >= E100) : (l <= E100)))
+     {
+      if(i == g_barraActual)
+         Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
+             + " descartado: el retroceso alcanzo la EMA100");
+      s.toco30 = false;
+      return;
+     }
+
    bool hayUltimo = HayToque(s);
    Toque ultimo;
    ZeroMemory(ultimo);
    if(hayUltimo)
       ultimo = UltimoToque(s);
-
-   bool supera = true, extremoEntre = true, continuo = true;
-   if(hayUltimo)
-     {
-      supera = venta ? (l < ultimo.bajo) : (h > ultimo.alto);
-      extremoEntre = false;
-      for(int k = ultimo.bar + 1; k < i; k++)
-        {
-         if(venta ? (r[k].low < ultimo.bajo) : (r[k].high > ultimo.alto))
-           {
-            extremoEntre = true;
-            break;
-           }
-        }
-      continuo = venta ? (l < ultimo.bajo - P_extensionMinAtr * atrI)
-                       : (h > ultimo.alto + P_extensionMinAtr * atrI);
-     }
-   bool enfriado = (i - s.ultimaEntrada) >= P_cooldownEntrada;
    bool separado = !hayUltimo || (i - ultimo.bar) >= P_separacionToques;
 
-   if(toca && enfriado && supera && extremoEntre && continuo && separado)
+   // por donde tiene que volver: si cerro sobre la EMA50, la 50; si no, la 30
+   double nivelVol = s.toco30Sobre50 ? E50 : E30;
+   bool deVuelta   = venta ? (c < nivelVol) : (c > nivelVol);
+   // "que la cruce CON CUERPO": solo se exige cuando la vuelta es por la
+   // EMA50 (el retroceso profundo). En el toque somero basta con romper la 30.
+   double cuerpoVol = MathAbs(c - o);
+   bool cuerpoOk = (!s.toco30Sobre50) || ((h - l) > 0 && cuerpoVol >= P_cuerpoMin * (h - l)
+                                         && cuerpoVol >= P_cuerpoMinAtr * atrI);
+
+   if(s.toco30 && deVuelta && separado && cuerpoOk)
      {
-      // "el minimo anterior" = extremo de las N velas previas al toque
-      double nivel = 0;
-      int desde = i - P_ventanaMin;
-      if(desde < 0)
-         desde = 0;
-      bool primero = true;
-      for(int k = desde; k < i; k++)
-        {
-         if(primero)
-           {
-            nivel = venta ? r[k].low : r[k].high;
-            primero = false;
-           }
-         else
-            nivel = venta ? MathMin(nivel, r[k].low) : MathMax(nivel, r[k].high);
-        }
       Toque t;
       t.bar     = i;
-      t.nivel   = nivel;
-      t.extremo = extremo;
+      t.nivel   = nivelVol;
+      t.extremo = s.toco30Extremo;   // la punta del retroceso, no la vela de vuelta
       t.alto    = h;
       t.bajo    = l;
       PushToque(s, t);
+      s.toco30 = false;
       if(i == g_barraActual)
          g_emb[g_tfIdx].toqW++;
 
-      // la 2 y la 3 son senales: el toque se entrega como entrada
-      if(s.nT >= 2 && s.avisados != s.nT)
+      // El toque 1 tambien avisa: los tres son la misma jugada y el numero es
+      // el orden del toque en la escalera (1, 2, 3). La R la pone ConReset
+      // cuando la escalera nacio de un engano.
+      if(s.nT <= 3 && s.avisados != s.nT)
         {
-         // Filtros anti-ruido: solo la vela actual escribe log
          int cr = CrucesEma30(r, e30, i, P_ventanaCruces);
          double er = ErDelTramo(r, hayUltimo ? ultimo.bar : -1, i, P_ventanaER);
          double sep1 = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
          double sep2 = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
-         bool bloqueado = false;
-         string motivo = "";
-         if(cr >= P_minCrucesBloqueo) { bloqueado = true; motivo = motivo + " cruces=" + IntegerToString(cr); }
-         if(er < P_erMinToque)        { bloqueado = true; motivo = motivo + " ER=" + DoubleToString(er, 2); }
-         // la separacion ya vive dentro de "alineada": aqui solo se mide
-         motivo = motivo + " sep=" + DoubleToString(sep1, 2) + "/" + DoubleToString(sep2, 2);
-         if(bloqueado)
+         // El ER de la ventana lleva dentro el retroceso entero y hunde un
+         // toque sano: se registra en el log pero no bloquea. Los cruces de
+         // EMA30 si: cuatro en doce velas es lateral, no tendencia vigente.
+         string motivo = " ER=" + DoubleToString(er, 2)
+                       + " sep=" + DoubleToString(sep1, 2) + "/" + DoubleToString(sep2, 2);
+         if(cr >= P_minCrucesBloqueo)
            {
             if(i == g_barraActual)
               {
                g_emb[g_tfIdx].blqW++;
                Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque" + IntegerToString(s.nT)
-                   + " " + g_tfTxt + " bloqueado:" + motivo);
+                   + " " + g_tfTxt + " bloqueado: cruces=" + IntegerToString(cr) + motivo);
               }
            }
          else
            {
             if(i == g_barraActual)
                g_emb[g_tfIdx].emiW++;
-            Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c, extremo, nivel,
-                   E30, E50, E100, c);
+            Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c,
+                   s.toco30Extremo, nivelVol, E30, E50, E100, c);
             s.ultimaEntrada = i;
             s.avisados = s.nT;   // solo si de verdad se emitio
             s.emitida  = true;
@@ -868,14 +878,14 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    else if(HayToque(s) && s.nT == 2)
       base = "2B";
    else if(enganoVivo && (!P_enganoExigeE100 || s.enganoProfundo))
-      base = "1";
+      base = "1S";   // la seductora: el "1" quedo para el primer toque
    else
       return;                       // sin toque y sin engano: no hay codigo
 
    // una sola entrada por secuencia: si la 2/3 ya se emitio, su 2B/3B no sale
-   if(P_unaPorSecuencia && s.emitida && base != "1")
+   if(P_unaPorSecuencia && s.emitida && base != "1S")
      {
-      s.ciclo++;                // la jugada ya dio su entrada: se cierra la escalera
+      // se cierra la escalera sin marcar reset: un cierre no es un engano
       s.nT = 0;
       s.avisados = 0;
       s.emitida = false;
@@ -890,7 +900,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    // base "1" = vuelta del engano. Con P_enganoEnEma50 el disparo es la vela
    // que CIERRA de vuelta a traves de la EMA50 en la direccion de la tendencia;
    // si no, el minimo del tramo (el "cuello"), que llega mas tarde y peor.
-   double nivelQ = (base == "1") ? (P_enganoEnEma50 ? E50 : s.enganoNivel) : t4.nivel;
+   double nivelQ = (base == "1S") ? (P_enganoEnEma50 ? E50 : s.enganoNivel) : t4.nivel;
    if(!(nivelQ > 0))
       return;
    bool rompe = venta ? (c < nivelQ) : (c > nivelQ);
@@ -911,7 +921,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    // EMA50 hasta esta), no en la ventana fija: la ventana de 10 velas lleva
    // dentro el rebote entero y hunde el ER, que es justo lo que bloqueaba la
    // senal del 19-11 (ER=0.09 en una jugada valida).
-   double erQ = (base == "1" && s.enganoBar >= 0 && s.enganoBar < i)
+   double erQ = (base == "1S" && s.enganoBar >= 0 && s.enganoBar < i)
                 ? Eficiencia(r, i, MathMax(1, i - s.enganoBar))
                 : ErDelTramo(r, HayToque(s) ? t4.bar : -1, i, P_ventanaER);
    double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
@@ -942,13 +952,16 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
 
    // el stop de la vuelta del engano es la PUNTA del tramo; el extremo del
    // toque vale 0 cuando nT==0 y dejaba la invalidacion en el precio 0.
-   double invalidaQ = (base == "1") ? s.enganoExtremo : t4.extremo;
+   double invalidaQ = (base == "1S") ? s.enganoExtremo : t4.extremo;
    if(!(invalidaQ > 0))
       return;
 
    Emitir(eventos, i, venta, ConReset(base, s.ciclo), c, invalidaQ, nivelQ, E30, E50, E100, c);
    s.ultimaEntrada = i;
-   s.ciclo++;
+   // La R significa UNA cosa: la escalera nacio de un engano (reset). Solo la
+   // seductora marca el reset; un 2B/3B o un toque no son un reset.
+   if(base == "1S")
+      s.ciclo++;
    s.nT = 0;
    s.avisados = 0;
    s.emitida  = false;
@@ -1976,8 +1989,10 @@ int Prioridad(const string p)
    double rr = 0;
    if(p == "3RB")      { tier = 3; rr =  0.295; }
    else if(p == "2RB") { tier = 3; rr =  0.149; }
-   else if(p == "1")   { tier = 2; rr =  0.067; }
-   else if(p == "1R")  { tier = 2; rr =  0.022; }
+   else if(p == "1S")  { tier = 2; rr =  0.067; }
+   else if(p == "1SR") { tier = 2; rr =  0.022; }
+   else if(p == "1")   { tier = 2; rr =  0.000; }
+   else if(p == "1R")  { tier = 2; rr = -0.010; }
    else if(p == "3B")  { tier = 2; rr =  0.014; }
    else if(p == "2B")  { tier = 1; rr = -0.060; }
    else if(p == "3R")  { tier = 1; rr = -0.161; }
