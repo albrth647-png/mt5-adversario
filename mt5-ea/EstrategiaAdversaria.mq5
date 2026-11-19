@@ -163,6 +163,7 @@ struct Secuencia
    bool   toco30Sobre50;   // y ademas cerro mas alla de la EMA50
    double toco30Extremo;   // punta del retroceso: stop y techo del tramo
    bool   supero;          // entre el toque anterior y este hubo extremo nuevo
+   double pico;            // extremo de la pata en curso: "el maximo mas previo"
    Toque  t1, t2, t3;
    int    nT;
    int    ciclo;
@@ -695,6 +696,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.nT = 0;
          s.avisados = 0;
          s.emitida  = false;
+         s.pico     = 0;
         }
       s.retesteo = false;
      }
@@ -721,6 +723,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.avisados = 0;
          s.emitida  = false;
          s.retesteo = false;
+         s.pico     = 0;
          s.engano = false;
          s.enganoBar = -1;
          s.enganoNivel = 0;
@@ -747,11 +750,13 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       bool invertida = venta ? (E30 > E50) : (E30 < E50);
       if(invertida)
         {
-         // La R tambien es de reset por CAMBIO DE TENDENCIA: la escalera que
-         // venga cuando la pila vuelva a estar en orden nace reseteada.
+         // Cambio de estructura: la escalera se reinicia y vuelve a 1, 2, 3
+         // SIN R. La R solo la pone la seductora dentro de la escalera.
          s.nT = 0;
-         s.ciclo++;
+         s.ciclo = 0;
          s.avisados = 0;
+         s.supero   = false;
+         s.pico     = 0;
          s.emitida  = false;
          s.retesteo = false;
          s.toco30 = false;
@@ -802,14 +807,18 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    ZeroMemory(ultimo);
    if(hayUltimo)
       ultimo = UltimoToque(s);
-   bool separado = !hayUltimo || (i - ultimo.bar) >= P_separacionToques;
 
-   // El toque nuevo solo vale si ENTRE los dos el precio rompio el extremo del
-   // toque anterior y siguio la tendencia: el toque 1 es el retroceso, y el 2
-   // exige que la tendencia haya avanzado de verdad. Sin el ATR extra que se
-   // exigia antes: basta con superar el extremo previo.
-   if(hayUltimo && (venta ? (l < ultimo.bajo) : (h > ultimo.alto)))
+   // Extremo de la pata en curso: la punta del impulso, no la vela del
+   // retroceso. Del toque 2 en adelante el precio TIENE que romperlo: si la
+   // tendencia no avanzo, el toque no cuenta y no se repite la senal.
+   if(s.pico == 0)
+      s.pico = venta ? l : h;
+   if(hayUltimo && (venta ? (l < s.pico) : (h > s.pico)))
       s.supero = true;
+   s.pico = venta ? MathMin(s.pico, l) : MathMax(s.pico, h);
+
+   bool separado = !hayUltimo || (i - ultimo.bar) >= P_separacionToques;
+   // el toque 1 no exige nada; el 2 y el 3 solo valen con extremo roto
    bool supera = !hayUltimo || s.supero;
 
    // por donde tiene que volver: si cerro sobre la EMA50, la 50; si no, la 30
@@ -901,6 +910,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       s.nT = 0;
       s.avisados = 0;
       s.emitida = false;
+      s.pico    = 0;
       s.engano = false;
       s.enganoBar = -1;
       s.enganoNivel = 0;
@@ -968,6 +978,8 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    // seductora marca el reset; un 2B/3B o un toque no son un reset.
    if(base == "1S")
       s.ciclo++;
+   s.pico = 0;
+   s.supero = false;
    s.nT = 0;
    s.avisados = 0;
    s.emitida  = false;
