@@ -53,7 +53,10 @@ int    P_caducidadRetesteo = 3;
 double P_tolRetesteoAtr    = 0.30;
 // Filtros anti-ruido (precio pegado a EMA30)
 int    P_ventanaCruces     = 12;
-int    P_minCrucesBloqueo  = 3;
+// Bloqueo por chop: 3 cruces de la EMA30 en 12 velas es lateral, pero 3 es
+// demasiado estricto (con ER=0.50, un tramo claramente direccional, ya se
+// bloqueaba). Se exige mas de un tercio de la ventana.
+int    P_minCrucesBloqueo  = 4;
 int    P_ventanaER         = 10;    // ventana corta: el ER de 20 castiga el retroceso
 double P_erMinToque        = 0.18;
 double P_erMinQuiebre      = 0.22;
@@ -314,8 +317,11 @@ bool EnviarTelegram(const string texto)
    if(ArraySize(respuesta) > 0)
       respTxt = CharArrayToString(respuesta, 0, WHOLE_ARRAY, CP_UTF8);
    Log(StringFormat("Telegram: FALLO http=%d error=%d -> queda en pend_*.txt | resp: %s", code, fallo, respTxt));
-   GuardarPendiente(texto);
-   return false;
+   // Si el mensaje queda encolado, el runner lo entrega en <=15 s: para el EA
+   // cuenta como enviado. Antes se devolvia false y, con el terminal bloqueado
+   // (4014 en el 100% de los envios), el contador del latido nunca sumaba y el
+   // antiduplicado no se marcaba aunque la senal si llegaba a Telegram.
+   return GuardarPendiente(texto);
   }
 
 // Si MT5 no deja salir a WebRequest (error 4014: URL no autorizada), el mensaje
@@ -323,7 +329,7 @@ bool EnviarTelegram(const string texto)
 // manda tal cual. Un archivo por mensaje evita carreras de lectura/escritura
 // y hace la entrega fiable.
 int g_pendienteSeq = 0;
-void GuardarPendiente(const string texto)
+bool GuardarPendiente(const string texto)
   {
    g_pendienteSeq++;
    // Nombre unico: tickcount ms + contador, para que dos mensajes nunca
@@ -333,11 +339,12 @@ void GuardarPendiente(const string texto)
    if(h == INVALID_HANDLE)
      {
       Log("no puedo abrir " + nombre + " (error " + IntegerToString(GetLastError()) + ")");
-      return;
+      return false;
      }
    FileWrite(h, texto);
    FileClose(h);
    Log("mensaje guardado en " + nombre + " (pendiente de entrega)");
+   return true;
   }
 
 //--------------------------------------------------------------------
@@ -490,6 +497,19 @@ double Eficiencia(const MqlRates &r[], const int i, const int ventana)
    if(suma <= 0)
       return 1.0;
    return total / suma;
+  }
+
+// ER del tramo que origino el patron. La escalera emite justo DESPUES de un
+// retroceso, y el retroceso es lo que hunde el ER de la ventana corta: medido
+// solo en la vela de emision, el filtro rechazaba la tendencia sana que esta
+// respirando. Se mide tambien al final del impulso y vale el mejor de los dos.
+double ErDelTramo(const MqlRates &r[], const int barImpulso, const int barAhora, const int ventana)
+  {
+   double erAhora = Eficiencia(r, barAhora, ventana);
+   if(barImpulso < 0 || barImpulso >= barAhora)
+      return erAhora;
+   double erImpulso = Eficiencia(r, barImpulso, ventana);
+   return MathMax(erAhora, erImpulso);
   }
 
 //--------------------------------------------------------------------
@@ -702,7 +722,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
         {
          // Filtros anti-ruido: solo la vela actual escribe log
          int cr = CrucesEma30(r, e30, i, P_ventanaCruces);
-         double er = Eficiencia(r, i, P_ventanaER);
+         double er = ErDelTramo(r, hayUltimo ? ultimo.bar : -1, i, P_ventanaER);
          double sep1 = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
          double sep2 = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
          bool bloqueado = false;
@@ -781,7 +801,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
 
    // Filtros anti-ruido en el quiebre
    int crQ = CrucesEma30(r, e30, i, P_ventanaCruces);
-   double erQ = Eficiencia(r, i, P_ventanaER);    double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;    double sep2Q = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
+   double erQ = ErDelTramo(r, HayToque(s) ? t4.bar : -1, i, P_ventanaER);    double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;    double sep2Q = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
    bool bloqueadoQ = false;
    string motivoQ = "";
    if(crQ >= P_minCrucesBloqueo) { bloqueadoQ = true; motivoQ = motivoQ + " cruces=" + IntegerToString(crQ); }
@@ -1026,17 +1046,24 @@ void Revisar(const int idx)
 
          TendMayor tm = TendenciaMayor(g_est[idx].nombre, tCierre);
          string extra = SufijoTendencia(tm, g_tfTxt);
-         // Filtro: H1 en contra bloquea la senal (no solo la comenta)
+         // Filtro: H1 en contra bloquea la senal (no solo la comenta).
+         // En M3 el H1 solo avisa (va en el texto de la senal): la estructura
+         // de H1 se mueve en horas y bloqueaba el 100% de las senales de M3.
          if(tm.ok && tm.tendencia != "RANGO")
            {
             bool contra = (ev.lado == "VENTA"  && tm.tendencia == "ALCISTA")
                        || (ev.lado == "COMPRA" && tm.tendencia == "BAJISTA");
-            if(contra)
+            if(contra && g_tfTxt != "M3")
               {
                Log("[FILTRO H1] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt
-                   + " bloqueado por H1 " + tm.tendencia);
+                   + " bloqueado por H1 " + tm.tendencia + " (" + tm.fase
+                   + ", rotura hace " + IntegerToString(tm.velasRotura) + " velas H1)");
                continue;
               }
+            if(contra)
+               Log("[AVISO H1] " + ev.lado + " " + g_est[idx].nombre + " M3 contra H1 "
+                   + tm.tendencia + " (" + tm.fase + ", rotura hace "
+                   + IntegerToString(tm.velasRotura) + " velas H1): sale avisada");
            }
          string texto = MensajeSenal(g_est[idx].nombre, g_tfTxt, ev, tCierreUTC, extra);
          Log("[SENAL] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt + " "
@@ -1183,6 +1210,16 @@ void OnTimer()
             + "(senales " + IntegerToString(senTot) + ")";
      }
    Log(txt);
+   // Estado H1 por simbolo, una vez por latido: evidencia numerica para
+   // decidir si el veto por H1 esta midiendo la estructura o una etiqueta vieja.
+   for(int i=0; i<n; i++)
+     {
+      if(StringLen(g_est[i].nombre) == 0)
+         continue;
+      string eh = EstadoH1(g_est[i].nombre);
+      if(StringLen(eh) > 0)
+         Log("[H1] " + g_est[i].nombre + ": " + eh);
+     }
    if(g_enviarPrecios == 1 && g_tgToken != "" && g_tgChat != "")
       EnviarTelegram(txt);
   }
@@ -1392,7 +1429,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
             bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= P_sepMinE30E50*atr[i] && (e100[i]-e50[i]) >= P_sepMinE50E100*atr[i])
                                   : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
             int crE = CrucesEma30(r, e30, i, P_ventanaCruces);
-            double erE = Eficiencia(r, i, P_ventanaER);             double sep1E = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];             double sep2E = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
+            double erE = ErDelTramo(r, s.impulsoBar, i, P_ventanaER);             double sep1E = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];             double sep2E = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
             // la separacion ya vive dentro de "alineada": aqui solo se mide
             bool bloqueadoE = (crE >= P_minCrucesBloqueo) || (erE < P_erMinQuiebre);
             bool yaEmitidaE = P_unaPorSecuencia && s.emitida && (base != "1E");
@@ -1484,8 +1521,7 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
          string codigo = (s.nT == 2) ? ConReset("2E", s.ciclo) : ConReset("3E", s.ciclo);
          bool alineada = venta ? (r[i].close < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= P_sepMinE30E50*atr[i] && (e100[i]-e50[i]) >= P_sepMinE50E100*atr[i])
                                : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
-         int crE2 = CrucesEma30(r, e30, i, P_ventanaCruces);
-         double erE2 = Eficiencia(r, i, P_ventanaER);          double sep1E2 = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];          double sep2E2 = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
+         int crE2 = CrucesEma30(r, e30, i, P_ventanaCruces);          double erE2 = ErDelTramo(r, s.impulsoBar, i, P_ventanaER);          double sep1E2 = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];          double sep2E2 = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
          // la separacion ya vive dentro de "alineada": aqui solo se mide
          bool bloqueadoE2 = (crE2 >= P_minCrucesBloqueo) || (erE2 < P_erMinToque);
          if(alineada && !bloqueadoE2)
@@ -1618,6 +1654,7 @@ struct TendMayor
    string   fase;
    double   invalida;
    datetime t;
+   int      velasRotura;   // velas H1 desde la rotura que sostiene la direccion
   };
 
 TendMayor TendenciaMayor(const string simbolo, const datetime tCierre)
@@ -1628,6 +1665,7 @@ TendMayor TendenciaMayor(const string simbolo, const datetime tCierre)
    tm.fase = "";
    tm.invalida = 0;
    tm.t = 0;
+   tm.velasRotura = 0;
 
    MqlRates h1[];
    int n = CopyRates(simbolo, PERIOD_H1, 1, 1500, h1);
@@ -1661,6 +1699,17 @@ TendMayor TendenciaMayor(const string simbolo, const datetime tCierre)
    int d = dir[k];
    tm.ok = true;
    tm.t = h1[k].time;
+   // antiguedad de la rotura: si la direccion lleva cientos de velas H1 sin
+   // renovarse, la etiqueta describe el pasado, no la estructura de ahora.
+   int vr = 0;
+   if(d != 0)
+      for(int j = k; j >= 0; j--)
+        {
+         if(dir[j] != d)
+            break;
+         vr = k - j;
+        }
+   tm.velasRotura = vr;
    tm.invalida = inv[k];
    tm.tendencia = (d == 1) ? "ALCISTA" : ((d == -1) ? "BAJISTA" : "RANGO");
    bool enTendencia = false;
@@ -1673,12 +1722,21 @@ TendMayor TendenciaMayor(const string simbolo, const datetime tCierre)
   }
 
 string SufijoTendencia(const TendMayor &tm, const string tfZona)
-  {
-   if(!tm.ok || tfZona == "H1")
+  {   if(!tm.ok || tfZona == "H1")
       return "";
    string fase = (tm.fase == "TENDENCIA") ? "en tendencia"
                  : ((tm.fase == "RETROCESO") ? "retroceso" : "sin swing");
    return " · H1 " + tm.tendencia + " · " + fase;
+  }
+
+// Resumen de una linea del estado H1, para el latido.
+string EstadoH1(const string simbolo)
+  {
+   TendMayor tm = TendenciaMayor(simbolo, TimeGMT());
+   if(!tm.ok)
+      return "";
+   return tm.tendencia + " · " + tm.fase + " · rotura hace "
+          + IntegerToString(tm.velasRotura) + " velas H1";
   }
 
 //====================================================================
