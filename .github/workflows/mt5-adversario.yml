@@ -103,15 +103,61 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $out
           if ($out -match 'FALLO http=-1') { Write-Warning 'el EA no pudo salir a Telegram; los mensajes se entregan por el script' }
 
+      # Se copian al workspace antes de subirlos. Antes se subian con globs sobre
+      # C:\Program Files y a veces el artifact salia vacio sin avisar; copiando y
+      # contando primero, el log del run dice exactamente que se recogio.
+      - name: Recoger logs
+        if: always()
+        shell: pwsh
+        run: |
+          $dest = 'logs-artifact'
+          Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+          $map = [ordered]@{
+            'MQL5/Files' = "$env:MT5_DIR\MQL5\Files"
+            'MQL5/Logs'  = "$env:MT5_DIR\MQL5\Logs"
+            'terminal'   = "$env:MT5_DIR\logs"
+          }
+          foreach ($k in $map.Keys) {
+            $src = $map[$k]
+            if (-not (Test-Path $src)) { Write-Host "no existe: $src"; continue }
+            $out = Join-Path $dest $k
+            New-Item -ItemType Directory -Force -Path $out | Out-Null
+            for ($r = 1; $r -le 3; $r++) {
+              Get-ChildItem -LiteralPath $src -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -eq '.log' -or $_.Extension -eq '.txt' } |
+                ForEach-Object {
+                  $f = $_
+                  try { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $out $f.Name) -Force -ErrorAction Stop }
+                  catch { Write-Warning "no pude copiar $($f.Name): $($_.Exception.Message)" }
+                }
+              $n = @(Get-ChildItem -LiteralPath $out -File -ErrorAction SilentlyContinue).Count
+              if ($n -gt 0) { break }
+              Start-Sleep -Seconds 5
+            }
+            Write-Host "$k -> $(@(Get-ChildItem -LiteralPath $out -File -ErrorAction SilentlyContinue).Count) archivo(s)"
+          }
+
+          # Solo las lineas de WebRequest: common.ini lleva login y contrasena y el
+          # repo es publico, asi que el archivo no se sube, solo se informa.
+          $cp = Join-Path $env:MT5_DIR 'config\common.ini'
+          if (Test-Path $cp) {
+            $wr = @(Get-Content -LiteralPath $cp -Encoding Unicode | Select-String 'WebRequest')
+            if ($wr.Count -gt 0) { $wr | ForEach-Object { Write-Host "common.ini: $_" } }
+            else { Write-Warning 'common.ini sin lineas WebRequest (por eso da 4014)' }
+          } else { Write-Warning 'no existe config\common.ini' }
+
+          $rec = @(Get-ChildItem -Path $dest -Recurse -File)
+          Write-Host "total recogido: $($rec.Count) archivo(s)"
+          $rec | Sort-Object FullName | ForEach-Object { Write-Host ('  {0}  {1} B' -f $_.FullName, $_.Length) }
+          if ($rec.Count -eq 0) { Write-Warning 'no se recogio ningun log' }
+
       - name: Subir logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mt5-adversario-logs
-          path: |
-            C:\Program Files\MetaTrader 5\MQL5\Files\*.log
-            C:\Program Files\MetaTrader 5\MQL5\Files\*.txt
-            C:\Program Files\MetaTrader 5\MQL5\Logs\*.log
-            C:\Program Files\MetaTrader 5\logs\*.log
+          path: logs-artifact
           retention-days: 14
           if-no-files-found: warn
