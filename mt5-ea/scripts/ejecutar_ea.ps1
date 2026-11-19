@@ -120,13 +120,27 @@ function Enviar-Pendientes {
   $entregados = 0
   # Formato nuevo: un archivo por mensaje (pend_0001.txt, ...). Mas robusto:
   # sin regex, sin carreras de append, y cada mensaje se borra al entregarse.
-  foreach ($f in @(Get-ChildItem -LiteralPath $files -Filter 'pend_*.txt' -ErrorAction SilentlyContinue)) {
+  # Se usa Where-Object en lugar de -Filter: -Filter depende del proveedor y a
+  # veces no devuelve archivos cuyo nombre tiene guiones bajos en esta ruta.
+  $pendientes = @(Get-ChildItem -LiteralPath $files -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -like 'pend_*.txt' } | Sort-Object CreationTime)
+  if ($pendientes.Count -gt 0) {
+    Write-Host ("pendientes encontrados: " + (($pendientes | ForEach-Object { $_.Name }) -join ', '))
+  }
+  foreach ($f in $pendientes) {
     $contenido = $null
     for ($r = 0; $r -lt 5 -and -not $contenido; $r++) {
-      try { $contenido = Get-Content -LiteralPath $f.FullName -Raw -Encoding Unicode } catch { }
+      foreach ($enc in @('Unicode','UTF8','Default')) {
+        try { $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding $enc -ErrorAction Stop; if ($raw) { $contenido = $raw; break } } catch { }
+      }
       if (-not $contenido) { Start-Sleep -Seconds 1 }
     }
-    if (-not $contenido) { Write-Warning "no pude leer $($f.Name); se reintenta"; continue }
+    if (-not $contenido) {
+      $bytes = ''
+      try { $bytes = ([System.IO.File]::ReadAllBytes($f.FullName) | ForEach-Object { $_.ToString('X2') }) -join ' ' } catch { }
+      Write-Warning "no pude leer $($f.Name) (size=$($f.Length) bytes; primeros bytes: $bytes); se reintenta"
+      continue
+    }
     $body = @{ chat_id = $chat; text = $contenido.Trim(); parse_mode = 'HTML'; disable_web_page_preview = $true } | ConvertTo-Json -Compress
     $ok = $false
     $resp = $null

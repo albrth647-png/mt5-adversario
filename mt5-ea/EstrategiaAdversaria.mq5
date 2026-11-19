@@ -290,7 +290,9 @@ bool EnviarTelegram(const string texto)
                    + "\",\"text\":\"" + EscJson(texto)
                    + "\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}";
    char utf8[];
-   StringToCharArray(cuerpo, utf8, 0, StringLen(cuerpo), CP_UTF8);
+   // WHOLE_ARRAY: count es bytes en el array destino, no caracteres del origen;
+   // con StringLen(cuerpo) se truncaba el JSON cuando el texto lleva ó/emoji/·.
+   StringToCharArray(cuerpo, utf8, 0, WHOLE_ARRAY, CP_UTF8);
    int largo = ArraySize(utf8) - 1;    // sin el 0 final
    if(largo <= 0)
       return false;
@@ -308,7 +310,10 @@ bool EnviarTelegram(const string texto)
       return true;
      }
    int fallo = GetLastError();
-   Log(StringFormat("Telegram: FALLO http=%d error=%d -> queda en pend_*.txt", code, fallo));
+   string respTxt = "";
+   if(ArraySize(respuesta) > 0)
+      respTxt = CharArrayToString(respuesta, 0, WHOLE_ARRAY, CP_UTF8);
+   Log(StringFormat("Telegram: FALLO http=%d error=%d -> queda en pend_*.txt | resp: %s", code, fallo, respTxt));
    GuardarPendiente(texto);
    return false;
   }
