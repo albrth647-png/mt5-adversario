@@ -122,10 +122,10 @@ def resultados(senal, sl_atr, tp_r, cost_atr):
         toca_sl = (bajo <= sl) if signo > 0 else (alto >= sl)
         toca_tp = (alto >= tp) if signo > 0 else (bajo <= tp)
         if toca_sl:                       # conservador: el SL gana el empate
-            salida = (-1.0 - cost_atr, j - i0 + 1, barras[j][0])
+            salida = (-1.0 - cost_atr, j - i0 + 1, barras[j][0], "SL")
             break
         if toca_tp:
-            salida = (tp_r - cost_atr, j - i0 + 1, barras[j][0])
+            salida = (tp_r - cost_atr, j - i0 + 1, barras[j][0], "TP")
             break
 
     res = {}
@@ -138,7 +138,7 @@ def resultados(senal, sl_atr, tp_r, cost_atr):
             res[tl] = None
             continue
         r = signo * (barras[j][4] - entrada) / dist - cost_atr
-        res[tl] = (r, j - i0 + 1, barras[j][0])
+        res[tl] = (r, j - i0 + 1, barras[j][0], "TL")
     return res
 
 
@@ -151,7 +151,7 @@ def cache(senal, sl_atr, tp_r, cost_atr):
     return senal["_res"][clave]
 
 
-def metricas(rs):
+def metricas(rs, tipos=None):
     n = len(rs)
     if n == 0:
         return None
@@ -165,14 +165,18 @@ def metricas(rs):
         acum += r
         pico = max(pico, acum)
         dd = max(dd, pico - acum)
-    return {"n": n, "win": 100.0 * ganadas / n, "esperanza": total / n,
-            "total": total, "pf": pf, "dd": dd}
+    m = {"n": n, "win": 100.0 * ganadas / n, "esperanza": total / n,
+         "total": total, "pf": pf, "dd": dd}
+    if tipos:
+        m["tp"] = 100.0 * sum(1 for t in tipos if t == "TP") / n
+        m["sl"] = 100.0 * sum(1 for t in tipos if t == "SL") / n
+    return m
 
 
 def tabla_tl(senales, sl_atr, tp_r, cost_atr):
     filas = []
     for tl in TLS:
-        rs, velas = [], []
+        rs, velas, tipos = [], [], []
         for s in senales:
             if not s.get("_barras"):
                 continue
@@ -181,7 +185,8 @@ def tabla_tl(senales, sl_atr, tp_r, cost_atr):
                 continue
             rs.append(res[tl][0])
             velas.append(res[tl][1])
-        m = metricas(rs)
+            tipos.append(res[tl][3])
+        m = metricas(rs, tipos)
         if m is None:
             continue
         m["tl"] = tl
@@ -227,9 +232,15 @@ def tabla_dinero(senales, sl_atr, tp_r, tl, cost_atr, capital, riesgo_usd,
     forzados = 0
     total = 0.0
     ganadas = 0
+    hechas = 0
+    ruina = None
     bruto_pos = bruto_neg = 0.0
 
     for t, s, rr, t_sal in ops:
+        if eq <= 0:
+            ruina = t          # sin capital no hay operacion siguiente
+            break
+        hechas += 1
         abiertas = [x for x in abiertas if x > t]
         d = distancia_sl(s, sl_atr)
         if d is None:
@@ -262,8 +273,9 @@ def tabla_dinero(senales, sl_atr, tp_r, tl, cost_atr, capital, riesgo_usd,
         meses[mes]["n"] += 1
         meses[mes]["usd"] += pnl
 
-    n = ganadas + (len(ops) - ganadas)
+    n = hechas
     return {"n": n, "win": 100.0 * ganadas / n if n else 0.0,
+            "ruina": ruina,
             "esperanza": total / n if n else 0.0, "total": total,
             "pf": (bruto_pos / bruto_neg) if bruto_neg > 0 else float("inf"),
             "dd_usd": dd_usd, "dd_pct": dd_pct, "final": eq,
@@ -274,8 +286,9 @@ def tabla_dinero(senales, sl_atr, tp_r, tl, cost_atr, capital, riesgo_usd,
 
 def fmt_r(m, etiqueta):
     pf = "inf" if m["pf"] == float("inf") else f"{m['pf']:.2f}"
-    return (f"| {etiqueta} | {m['n']} | {m['win']:.1f} % | {m['esperanza']:+.3f} R "
-            f"| {m['total']:+.1f} R | {pf} | {m['dd']:.1f} R | {m['velas']:.0f} |")
+    return (f"| {etiqueta} | {m['n']} | {m.get('tp', 0.0):.1f} % | {m.get('sl', 0.0):.1f} % "
+            f"| {m['esperanza']:+.3f} R | {m['total']:+.1f} R | {pf} | {m['dd']:.1f} R "
+            f"| {m['velas']:.0f} |")
 
 
 def fmt_usd(m, etiqueta):
@@ -285,8 +298,8 @@ def fmt_usd(m, etiqueta):
             f"| {m['final']:.2f} $ | {m['retorno']:+.1f} % |")
 
 
-CAB_R = ("| grupo | n | acierto | E[R] | total | PF | DD máx | velas |\n"
-         "|---|---:|---:|---:|---:|---:|---:|---:|")
+CAB_R = ("| grupo | n | TP | SL | E[R] | total | PF | DD máx | velas |\n"
+         "|---|---:|---:|---:|---:|---:|---:|---:|---:|")
 CAB_USD = ("| TL | n | acierto | E[$] | total | PF | DD $ | DD % | final | retorno |\n"
            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
 
@@ -402,11 +415,19 @@ def main():
     if dinero:
         mejor = max(dinero, key=lambda m: m["final"])
         et = "sin TL" if mejor["tl"] == 0 else f"{mejor['tl']} velas"
+        if mejor.get("ruina"):
+            L.append(f"> **Ruina el {mejor['ruina']}**: con {args.riesgo:.0f} USD por "
+                     f"operación los {args.capital:.0f} USD no aguantan. La simulación se "
+                     f"corta ahí ({mejor['n']} operaciones); después de ese punto no habría "
+                     f"cuenta con la que operar.\n")
         L.append(f"### Mes a mes (mejor TL: {et})\n")
         L.append("| mes | ops | resultado | capital |")
         L.append("|---|---:|---:|---:|")
         eqm = args.capital
+        tope = mejor["ruina"][:7] if mejor.get("ruina") else None
         for mes in sorted(mejor["meses"]):
+            if tope and mes > tope:
+                continue
             d = mejor["meses"][mes]
             eqm += d["usd"]
             L.append(f"| {mes} | {d['n']} | {d['usd']:+.2f} $ | {eqm:.2f} $ |")
