@@ -1,0 +1,8 @@
+<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Adversario en vivo</title>
+<style>body{margin:0;background:#0b0f14;color:#d7e0ea;font:13px monospace}img{width:100%;height:auto;display:block}pre{padding:8px;white-space:pre-wrap}</style>
+<h2>grafica real de MT5</h2>
+<img src="panel_chart.png" alt="grafica MT5">
+<h2>estado del EA</h2>
+<pre id=e>...</pre>
+<script>fetch('panel_estado.json').then(r=>r.json()).then(d=>{document.getElementById('e').textContent=JSON.stringify(d,null,2)}).catch(()=>{})</script>
