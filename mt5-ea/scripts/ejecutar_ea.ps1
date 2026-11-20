@@ -211,9 +211,11 @@ if ($Panel -eq 'si') {
     New-Item -ItemType Directory -Force -Path $salidaPanel | Out-Null
     # el propio ejecutable de este host, para no depender del PATH
     $pwshExe = (Get-Process -Id $PID).Path
+    # Start-Process une ArgumentList con espacios y NO pone comillas: cada ruta
+    # con espacios tiene que ir ya entre comillas o llega cortada (C:\Program).
     $pPanel = Start-Process -FilePath $pwshExe `
-                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPanel,
-                                '-Puerto', '8787', '-Mt5Dir', $Mt5Dir, '-Salida', $salidaPanel,
+                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', "-File `"$scriptPanel`"",
+                                '-Puerto', '8787', "-Mt5Dir `"$Mt5Dir`"", "-Salida `"$salidaPanel`"",
                                 '-Minutos', "$Minutos", '-Supervisar') `
                 -RedirectStandardOutput (Join-Path $salidaPanel 'panel_web.log') `
                 -RedirectStandardError  (Join-Path $salidaPanel 'panel_web.err.log') `

@@ -43,7 +43,17 @@ async function leerEstado() {
     datos._edadSeg = Math.round((Date.now() - st.mtimeMs) / 1000);
     return datos;
   } catch (e) {
-    return { error: 'sin datos del EA todavía', detalle: String(e.message), _edadSeg: null };
+    // ENOENT es lo normal los primeros minutos: el EA escribe el snapshot al
+    // cerrar la primera vela M3. Solo se muestra el detalle técnico si es otro
+    // fallo (JSON a medias, permisos...).
+    const falta = e && e.code === 'ENOENT';
+    return {
+      error: falta
+        ? 'el EA todavía no ha escrito su estado (lo hace al cerrar la primera vela M3)'
+        : 'no pude leer el estado del EA',
+      detalle: falta ? undefined : String(e.message),
+      _edadSeg: null,
+    };
   }
 }
 
