@@ -10,7 +10,8 @@
 param(
   [int]$Minutos = 240,
   [string]$Mt5Dir = 'C:\Program Files\MetaTrader 5',
-  [string]$Tf = 'M5'
+  [string]$Tf = 'M5',
+  [string]$Panel = 'si'   # si/no: publicar el panel web en vivo
 )
 
 $ErrorActionPreference = 'Stop'
@@ -197,6 +198,30 @@ function Enviar-Pendientes {
     }
   }
   return $entregados
+}
+
+# --------------------------------------------------------------------- panel
+# El panel y su tunel se cuelgan de ESTE proceso, que dura toda la sesion. Si se
+# lanzaran en su propio step, al terminar el step el runner se lleva cloudflared
+# y el enlace del movil muere (Cloudflare error 1033).
+if ($Panel -eq 'si') {
+  $scriptPanel = Join-Path $PSScriptRoot 'panel_web.ps1'
+  if (Test-Path $scriptPanel) {
+    $salidaPanel = Join-Path (Get-Location) 'panel-out'
+    New-Item -ItemType Directory -Force -Path $salidaPanel | Out-Null
+    # el propio ejecutable de este host, para no depender del PATH
+    $pwshExe = (Get-Process -Id $PID).Path
+    $pPanel = Start-Process -FilePath $pwshExe `
+                -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPanel,
+                                '-Puerto', '8787', '-Mt5Dir', $Mt5Dir, '-Salida', $salidaPanel,
+                                '-Minutos', "$Minutos", '-Supervisar') `
+                -RedirectStandardOutput (Join-Path $salidaPanel 'panel_web.log') `
+                -RedirectStandardError  (Join-Path $salidaPanel 'panel_web.err.log') `
+                -WindowStyle Hidden -PassThru
+    Write-Host "panel lanzado (pid $($pPanel.Id)), puerto 8787"
+  } else {
+    Write-Warning "no encuentro $scriptPanel; sigo sin panel"
+  }
 }
 
 # ------------------------------------------------------------------- arranque

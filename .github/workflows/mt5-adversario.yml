@@ -76,17 +76,6 @@ jobs:
         shell: pwsh
         run: ./mt5-ea/scripts/instalar_mt5.ps1 -Fuente 'mt5-ea/EstrategiaAdversaria.mq5'
 
-      # El panel arranca en segundo plano y sobrevive al step: la web queda
-      # publicada mientras corre el EA. El enlace se manda a Telegram.
-      - name: Arrancar el panel web en vivo
-        if: ${{ inputs.panel != 'no' }}
-        shell: pwsh
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
-          MT5_DIR: C:\Program Files\MetaTrader 5
-        run: ./mt5-ea/scripts/panel_web.ps1 -Puerto 8787 -Salida panel-out
-
       - name: Arrancar el EA y vigilar la sesion
         shell: pwsh
         env:
@@ -99,9 +88,10 @@ jobs:
           S_OVR: ${{ inputs.servidor }}
           MIN: ${{ inputs.minutos }}
           TF_IN: M5
+          PANEL: ${{ inputs.panel }}
         run: |
           if ($env:S_OVR) { $env:MT5_SERVER = $env:S_OVR; Write-Host "servidor de prueba: $env:S_OVR" }
-          ./mt5-ea/scripts/ejecutar_ea.ps1 -Minutos ([int]$env:MIN) -Tf $env:TF_IN
+          ./mt5-ea/scripts/ejecutar_ea.ps1 -Minutos ([int]$env:MIN) -Tf $env:TF_IN -Panel $env:PANEL
 
       - name: Resumen (ultimas senales)
         if: always()
