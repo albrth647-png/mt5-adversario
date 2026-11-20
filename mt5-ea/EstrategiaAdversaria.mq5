@@ -60,14 +60,11 @@ int    P_ventanaCruces     = 12;
 // bloqueaba). Se exige mas de un tercio de la ventana.
 int    P_minCrucesBloqueo  = 4;
 int    P_ventanaER         = 10;    // ventana corta: el ER de 20 castiga el retroceso
-double P_erMinToque        = 0.18;
 // 0.22 medido en M3 sobre la vela del quiebre es inalcanzable: el quiebre
 // llega justo despues del retroceso y esa ventana de 10 velas lleva dentro
 // el retroceso, asi que el ER se hunde. Caso real bloqueado: ER=0.18 con
 // cruces=0 y separaciones 1.14/2.89 (nada mas fallaba).
 double P_erMinQuiebre      = 0.15;
-double P_sepMinE30E50      = 0.5;
-double P_sepMinE50E100     = 1.0;
 // Una sola entrada por secuencia: si ya salio la 2 (o la 3), no se emite
 // despues la 2B/3B del mismo movimiento. Ponlo en false para comparar.
 bool   P_unaPorSecuencia   = true;
@@ -856,8 +853,9 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       bool sigueRoto = venta ? (c < s.retNivel) : (c > s.retNivel);
       if(prueba && sigueRoto)
         {
-         bool alineadaAhora = venta ? (c < E30 && E30 <= E50 && E50 <= E100 && (E50 - E30) >= P_sepMinE30E50 * atrI && (E100 - E50) >= P_sepMinE50E100 * atrI)
-                                    : (c > E30 && E30 >= E50 && E50 >= E100 && (E30 - E50) >= P_sepMinE30E50 * atrI && (E50 - E100) >= P_sepMinE50E100 * atrI);
+         // §10: la pila solo exige ORDEN; no se exige separacion entre EMAs.
+         bool alineadaAhora = venta ? (c < E30 && E30 <= E50 && E50 <= E100)
+                                    : (c > E30 && E30 >= E50 && E50 >= E100);
          if(!alineadaAhora)
            {
             s.retesteo = false;
@@ -1342,22 +1340,15 @@ void Revisar(const int idx)
 
          TendMayor tm = TendenciaMayor(g_est[idx].nombre, tCierre);
          string extra = SufijoTendencia(tm, g_tfTxt);
-         // Filtro: H1 en contra bloquea la senal (no solo la comenta).
-         // En M3 el H1 solo avisa (va en el texto de la senal): la estructura
-         // de H1 se mueve en horas y bloqueaba el 100% de las senales de M3.
+         // El H1 NO es un filtro del documento (§7 solo fija ER y cruces):
+         // el estado de H1 se escribe en la senal y en el log, pero no veta
+         // ninguna temporalidad.
          if(tm.ok && tm.tendencia != "RANGO")
            {
             bool contra = (ev.lado == "VENTA"  && tm.tendencia == "ALCISTA")
                        || (ev.lado == "COMPRA" && tm.tendencia == "BAJISTA");
-            if(contra && g_tfTxt != "M3")
-              {
-               Log("[FILTRO H1] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt
-                   + " bloqueado por H1 " + tm.tendencia + " (" + tm.fase
-                   + ", rotura hace " + IntegerToString(tm.velasRotura) + " velas H1)");
-               continue;
-              }
             if(contra)
-               Log("[AVISO H1] " + ev.lado + " " + g_est[idx].nombre + " M3 contra H1 "
+               Log("[AVISO H1] " + ev.lado + " " + g_est[idx].nombre + " " + g_tfTxt + " contra H1 "
                    + tm.tendencia + " (" + tm.fase + ", rotura hace "
                    + IntegerToString(tm.velasRotura) + " velas H1): sale avisada");
            }
@@ -1522,14 +1513,7 @@ void BtPaso()
          if(mejor < 0)
             continue;
          Evento ev = cand[mejor];
-         // mismo veto que en vivo: H1 en contra bloquea (M3 solo avisa)
-         if(tm.ok && tm.tendencia != "RANGO")
-           {
-            bool contra = (ev.lado == "VENTA"  && tm.tendencia == "ALCISTA")
-                       || (ev.lado == "COMPRA" && tm.tendencia == "BAJISTA");
-            if(contra && g_tfTxt != "M3")
-               continue;
-           }
+         // mismo criterio que en vivo: el H1 se anota en la senal, no veta
          BtSenal(g_tfTxt, ev, tBarra, atrS, h1);
         }
      }
@@ -1964,11 +1948,12 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
             if(actE)
                g_emb[g_tfIdx].rompe++;
             string base = (s.nT >= 3) ? "3EB" : ((s.nT == 2) ? "2EB" : "1E");
-            bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= P_sepMinE30E50*atr[i] && (e100[i]-e50[i]) >= P_sepMinE50E100*atr[i])
-                                  : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
+            // §10: la pila solo exige ORDEN; la separacion solo se mide para el log.
+            bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i])
+                                  : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i]);
             int crE = CrucesEma30(r, e30, i, P_ventanaCruces);
             double erE = ErDelTramo(r, s.impulsoBar, i, P_ventanaER);             double sep1E = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];             double sep2E = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
-            // la separacion ya vive dentro de "alineada": aqui solo se mide
+            // la separacion solo se mide (va en el log): no filtra
             bool bloqueadoE = (crE >= P_minCrucesBloqueo) || (erE < P_erMinQuiebre);
             bool yaEmitidaE = P_unaPorSecuencia && s.emitida && (base != "1E");
             // reparto exacto: cada quiebre cae en una sola de estas ramas
@@ -2077,11 +2062,12 @@ void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
       if(s.nT >= 2)
         {
          string codigo = (s.nT == 2) ? ConReset("2E", s.ciclo) : ConReset("3E", s.ciclo);
-         bool alineada = venta ? (r[i].close < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i] && (e50[i]-e30[i]) >= P_sepMinE30E50*atr[i] && (e100[i]-e50[i]) >= P_sepMinE50E100*atr[i])
-                               : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i] && (e30[i]-e50[i]) >= P_sepMinE30E50*atr[i] && (e50[i]-e100[i]) >= P_sepMinE50E100*atr[i]);
+         // §10: la pila solo exige ORDEN; la separacion solo se mide para el log.
+         bool alineada = venta ? (r[i].close < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i])
+                               : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i]);
          int crE2 = CrucesEma30(r, e30, i, P_ventanaCruces);          double erE2 = ErDelTramo(r, s.impulsoBar, i, P_ventanaER);          double sep1E2 = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];          double sep2E2 = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
-         // la separacion ya vive dentro de "alineada": aqui solo se mide
-         bool bloqueadoE2 = (crE2 >= P_minCrucesBloqueo) || (erE2 < P_erMinToque);
+         // §2: el ER se mide y se escribe en el log, pero no bloquea.
+         bool bloqueadoE2 = (crE2 >= P_minCrucesBloqueo);
          if(alineada && !bloqueadoE2)
            {
             Emitir(eventos, i, venta, codigo, r[i].close, contacto, nivelQuiebre,
