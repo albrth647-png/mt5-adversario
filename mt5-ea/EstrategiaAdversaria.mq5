@@ -49,6 +49,10 @@ int    P_separacionToques  = 2;
 int    P_cooldownEntrada   = 8;
 double P_extensionMinAtr   = 1.0;
 int    P_caducidadEngano   = 12;
+// 3x. La alerta del toque NO sale en la vela de vuelta: exige velas de
+// continuacion seguidas a favor de la tendencia (cierre del lado de la
+// apertura) DESPUES de la vuelta. La entrada es el cierre de la ultima.
+int    P_velasConfirmacion = 2;
 int    P_caducidadRetesteo = 3;
 double P_tolRetesteoAtr    = 0.30;
 // Filtros anti-ruido (precio pegado a EMA30)
@@ -183,7 +187,10 @@ struct Secuencia
    double enganoExtremo;   // punta del tramo: stop de la vuelta del engano
    bool   enganoProfundo;  // el tramo llego hasta la EMA100
    bool   toco30;          // el retroceso en curso ya toco la EMA30
-   bool   toco30Sobre50;   // y ademas cerro mas alla de la EMA50
+   bool   confPend;        // vuelta vista: esperando las velas de continuacion
+   int    confCont;        // velas de continuacion ya cumplidas
+   double confExtremo;     // punta del retroceso + confirmacion: stop del toque
+   bool   enganoBloq;      // el engano quedo anulado por cerrar sobre la EMA100
    double toco30Extremo;   // punta del retroceso: stop y techo del tramo
    bool   supero;          // entre el toque anterior y este hubo extremo nuevo
    double pico;            // extremo de la pata en curso: "el maximo mas previo"
@@ -694,8 +701,12 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    double E30 = e30[i], E50 = e50[i], E100 = e100[i];
 
    // 1. el precio se salio del techo (EMA50): nace el engano
+   //    Si antes cerro sobre la EMA100 el engaño quedo anulado: no se rearma
+   //    hasta que el precio vuelva del lado de la tendencia.
    bool salio = venta ? (c > E50) : (c < E50);
-   if(salio)
+   if(!salio)
+      s.enganoBloq = false;
+   if(salio && !(s.enganoBloq && !s.engano))
      {
       if(!s.engano)
         {
@@ -709,12 +720,14 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.enganoNivel = venta ? MathMin(s.enganoNivel, l) : MathMax(s.enganoNivel, h);
          s.enganoExtremo = venta ? MathMax(s.enganoExtremo, h) : MathMin(s.enganoExtremo, l);
         }
-      // el tramo llego hasta la EMA100: queda marcado como engano profundo
-      if(venta ? (h >= E100) : (l <= E100))
+      // 4a. la frontera de la EMA100 la marca el CUERPO, no la mecha: la
+      // mecha puede pincharla, cerrar al otro lado no. Si cierra, es cambio
+      // de tendencia y la seductora deja de valer.
+      if(venta ? (c > E100) : (c < E100))
         {
          if(!s.enganoProfundo && i == g_barraActual)
             Log("[ENGANO] " + (venta?"VENTA":"COMPRA") + " " + g_tfTxt
-                + " profundo: el tramo alcanzo la EMA100, esperando la vuelta por la EMA50");
+                + " anulado: cerro con cuerpo mas alla de la EMA100 (cambio de tendencia)");
          s.enganoProfundo = true;
         }
       s.enganoBar = i;
@@ -729,6 +742,34 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.pico     = 0;
         }
       s.retesteo = false;
+     }
+
+   // 4a + 2b. Cerrar CON CUERPO al otro lado de la EMA100 es cambio de
+   // tendencia. La mecha puede pincharla sin castigo; el cierre no. Cuando
+   // cruza, la escalera vuelve a 1 (y pierde la R) y el engaño queda anulado
+   // hasta que el precio regrese al lado de la tendencia.
+   if(venta ? (c > E100) : (c < E100))
+     {
+      if(i == g_barraActual && (s.nT > 0 || s.engano))
+         Log("[CAMBIO] " + (venta?"VENTA":"COMPRA") + " " + g_tfTxt
+             + " cerro con cuerpo mas alla de la EMA100: escalera a 1");
+      s.nT = 0;
+      s.ciclo = 0;
+      s.avisados = 0;
+      s.supero   = false;
+      s.pico     = 0;
+      s.emitida  = false;
+      s.retesteo = false;
+      s.toco30 = false;
+      s.confPend = false;
+      s.confCont = 0;
+      s.engano = false;
+      s.enganoBloq = true;
+      s.enganoBar = -1;
+      s.enganoNivel = 0;
+      s.enganoExtremo = 0;
+      s.enganoProfundo = false;
+      return;
      }
 
    // 1c. retesteo pendiente de la 2B: se espera la vuelta al nivel roto
@@ -800,37 +841,35 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
      }
 
    // 3. toque a la EMA30 y vuelta del retroceso.
-   //    Regla del propietario: el retroceso toca la EMA30 (mecha o cuerpo),
-   //    PUEDE superar la EMA50, NUNCA la EMA100, y la senal es la primera vela
-   //    que cierra de vuelta del lado de la tendencia: por la EMA50 si el
-   //    retroceso se salio, por la EMA30 si solo la topo.
+   //    1a. Regla del propietario: el retroceso toca la EMA30 y la MECHA
+   //    puede pinchar la EMA50 todo lo que quiera, pero el CIERRE no puede
+   //    quedar al otro lado. Si cierra alla, ese retroceso ya no es un toque:
+   //    se descarta y se empieza de nuevo.
+   //    4a. Con la EMA100 solo manda el cuerpo, y ahi cerrar es cambio de
+   //    tendencia (se trata arriba, antes de llegar aqui).
    double tol30 = P_tolToqueAtr * atrI;
-   bool llego30 = venta ? (h >= E30 - tol30) : (l <= E30 + tol30);
+   bool llego30      = venta ? (h >= E30 - tol30) : (l <= E30 + tol30);
+   bool cerroSobre50 = venta ? (c > E50) : (c < E50);
    if(i == g_barraActual && llego30)
       g_emb[g_tfIdx].tocaW++;
-   if(!s.toco30 && llego30)
-     {
-      s.toco30 = true;
-      s.toco30Sobre50 = false;
-      s.toco30Extremo = venta ? h : l;
-     }
-   if(s.toco30)
-     {
-      s.toco30Extremo = venta ? MathMax(s.toco30Extremo, h) : MathMin(s.toco30Extremo, l);
-      // "la cruce con cuerpo": un cierre mas alla de la EMA50 marca el techo
-      if(venta ? (c > E50) : (c < E50))
-         s.toco30Sobre50 = true;
-     }
 
-   // techo duro: si el retroceso alcanza la EMA100 la jugada no existe
-   if(s.toco30 && (venta ? (h >= E100) : (l <= E100)))
+   if(cerroSobre50 && (s.toco30 || s.confPend))
      {
       if(i == g_barraActual)
          Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
-             + " descartado: el retroceso alcanzo la EMA100");
-      s.toco30 = false;
-      return;
+             + " descartado: el retroceso cerro mas alla de la EMA50");
+      s.toco30   = false;
+      s.confPend = false;
+      s.confCont = 0;
      }
+
+   if(!s.toco30 && !s.confPend && !cerroSobre50 && llego30)
+     {
+      s.toco30 = true;
+      s.toco30Extremo = venta ? h : l;
+     }
+   if(s.toco30)
+      s.toco30Extremo = venta ? MathMax(s.toco30Extremo, h) : MathMin(s.toco30Extremo, l);
 
    bool hayUltimo = HayToque(s);
    Toque ultimo;
@@ -851,25 +890,54 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    // el toque 1 no exige nada; el 2 y el 3 solo valen con extremo roto
    bool supera = !hayUltimo || s.supero;
 
-   // por donde tiene que volver: si cerro sobre la EMA50, la 50; si no, la 30
-   double nivelVol = s.toco30Sobre50 ? E50 : E30;
+   // 1a: si el cierre no puede pasar de la EMA50, la vuelta es siempre por la
+   // EMA30 (toque somero): no hay vuelta por la 50 ni cuerpo que exigir.
+   double nivelVol = E30;
    bool deVuelta   = venta ? (c < nivelVol) : (c > nivelVol);
-   // "que la cruce CON CUERPO": solo se exige cuando la vuelta es por la
-   // EMA50 (el retroceso profundo). En el toque somero basta con romper la 30.
-   double cuerpoVol = MathAbs(c - o);
-   bool cuerpoOk = (!s.toco30Sobre50) || ((h - l) > 0 && cuerpoVol >= P_cuerpoMin * (h - l)
-                                         && cuerpoVol >= P_cuerpoMinAtr * atrI);
 
-   if(s.toco30 && deVuelta && separado && cuerpoOk && supera)
+   // 3x. La vela de vuelta NO avisa: arranca la cuenta de velas de
+   // continuacion. La entrada es el cierre de la ultima que confirma.
+   bool confirmado = false;
+   if(s.toco30 && deVuelta && separado && supera)
+     {
+      s.confPend    = true;
+      s.confCont    = 0;
+      s.confExtremo = s.toco30Extremo;
+      s.toco30      = false;
+      if(i == g_barraActual)
+         Log("[CONF] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
+             + " vuelta vista: esperando " + IntegerToString(P_velasConfirmacion)
+             + " velas de continuacion");
+     }
+   else if(s.confPend)
+     {
+      s.confExtremo = venta ? MathMax(s.confExtremo, h) : MathMin(s.confExtremo, l);
+      bool aFavor = venta ? (c < o) : (c > o);
+      if(aFavor)
+         s.confCont++;
+      else
+        {
+         s.confPend = false;
+         s.confCont = 0;
+         if(i == g_barraActual)
+            Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
+                + " descartado: la vela no continuo la tendencia");
+        }
+      if(s.confPend && s.confCont >= P_velasConfirmacion)
+         confirmado = true;
+     }
+
+   if(confirmado)
      {
       Toque t;
       t.bar     = i;
       t.nivel   = nivelVol;
-      t.extremo = s.toco30Extremo;   // la punta del retroceso, no la vela de vuelta
+      t.extremo = s.confExtremo;   // la punta del retroceso, no la vela de vuelta
       t.alto    = h;
       t.bajo    = l;
       PushToque(s, t);
-      s.toco30 = false;
+      s.confPend = false;
+      s.confCont = 0;
       s.supero = false;   // el proximo toque vuelve a exigir extremo nuevo
       s.nivelB = s.pico;  // la raya del impulso que tiene que romper la B
       s.bHecho = false;
@@ -904,7 +972,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
             if(i == g_barraActual)
                g_emb[g_tfIdx].emiW++;
             Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c,
-                   s.toco30Extremo, nivelVol, E30, E50, E100, c);
+                   s.confExtremo, nivelVol, E30, E50, E100, c);
             s.ultimaEntrada = i;
             s.avisados = s.nT;   // solo si de verdad se emitio
             s.emitida  = true;
@@ -923,7 +991,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       bool   rompeB    = venta ? (c < s.nivelB) : (c > s.nivelB);
       if(rompeB && cuerpoBok)
         {
-         double stopB = hayUltimo ? ultimo.extremo : s.toco30Extremo;
+         double stopB = hayUltimo ? ultimo.extremo : s.confExtremo;
          if(i == g_barraActual)
             g_emb[g_tfIdx].emiW++;
          Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT) + "B", s.ciclo),
