@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Adversario en vivo</title>
+<style>
+  :root {
+    --fondo: #0b0f14;
+    --panel: #121821;
+    --borde: #1f2a37;
+    --texto: #d7e0ea;
+    --tenue: #7b8a9c;
+    --sube: #2fbf71;
+    --baja: #e05252;
+    --e30: #f0b429;
+    --e50: #4aa3ff;
+    --e100: #b06cf0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--fondo); color: var(--texto);
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; background: #0b0f14f2;
+    border-bottom: 1px solid var(--borde); padding: 8px 10px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  }
+  header .marca { font-weight: 700; letter-spacing: .5px; }
+  header .punto { width: 8px; height: 8px; border-radius: 50%; background: var(--tenue); }
+  header .punto.vivo { background: var(--sube); box-shadow: 0 0 8px var(--sube); }
+  header .punto.muerto { background: var(--baja); }
+  .fichas { display: flex; gap: 6px; flex-wrap: wrap; }
+  .ficha {
+    border: 1px solid var(--borde); background: var(--panel); color: var(--tenue);
+    padding: 4px 9px; border-radius: 999px; cursor: pointer; font: inherit;
+  }
+  .ficha.on { border-color: #2fbf71; color: var(--texto); background: #16241c; }
+  main { display: grid; gap: 10px; padding: 10px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { main { grid-template-columns: 1.6fr 1fr; } }
+  .caja { background: var(--panel); border: 1px solid var(--borde); border-radius: 10px; overflow: hidden; }
+  .caja > h2 {
+    margin: 0; padding: 7px 10px; font-size: 12px; font-weight: 600; color: var(--tenue);
+    border-bottom: 1px solid var(--borde); letter-spacing: .4px; text-transform: uppercase;
+    display: flex; justify-content: space-between; gap: 8px; align-items: center;
+  }
+  #lienzo { width: 100%; height: 380px; display: block; }
+  .datos { display: flex; flex-wrap: wrap; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--borde); }
+  .dato { display: flex; gap: 5px; }
+  .dato b { font-weight: 600; }
+  .alcista { color: var(--sube); }
+  .bajista { color: var(--baja); }
+  .lateral { color: var(--tenue); }
+  #log { padding: 6px 8px; height: 300px; overflow-y: auto; }
+  #log div { white-space: pre-wrap; word-break: break-word; padding: 1px 0; border-bottom: 1px solid #ffffff08; }
+  #senales { padding: 6px 8px; max-height: 260px; overflow-y: auto; }
+  #senales div { padding: 3px 0; border-bottom: 1px solid #ffffff08; }
+  .s-senal { color: #5ee08c; font-weight: 700; }
+  .s-filtro { color: #6c7a89; }
+  .s-conf { color: #4aa3ff; }
+  .s-cambio { color: #f0b429; }
+  .s-embudo { color: #48566a; }
+  .s-h1 { color: #f0b429; }
+  .s-otro { color: #9fb0c2; }
+  .aviso { padding: 8px 10px; color: var(--tenue); }
+  .aviso.error { color: #ff8f8f; }
+</style>
+</head>
+<body>
+<header>
+  <span class="marca">ADVERSARIO</span>
+  <span class="punto" id="vivo"></span>
+  <span id="cuenta" class="tenue"></span>
+  <span style="flex:1"></span>
+  <span id="hora" class="tenue"></span>
+</header>
+
+<div class="fichas" id="simbolos" style="padding:8px 10px 0"></div>
+<div class="fichas" id="tfs" style="padding:6px 10px 0"></div>
+
+<main>
+  <section class="caja">
+    <h2><span id="tituloGrafico">gráfico</span><span id="edad"></span></h2>
+    <canvas id="lienzo"></canvas>
+    <div class="datos" id="datos"><span class="tenue">esperando datos del EA…</span></div>
+    <div class="datos" id="leyenda" style="border-top:none">
+      <span class="dato"><b style="color:var(--e30)">— EMA30</b></span>
+      <span class="dato"><b style="color:var(--e50)">— EMA50</b></span>
+      <span class="dato"><b style="color:var(--e100)">— EMA100</b></span>
+    </div>
+  </section>
+
+  <div style="display:grid; gap:10px">
+    <section class="caja">
+      <h2>señales</h2>
+      <div id="senales"><div class="tenue">sin señales todavía</div></div>
+    </section>
+    <section class="caja">
+      <h2><span>log del bot</span><span id="filtroLog" class="tenue" style="cursor:pointer">todas</span></h2>
+      <div id="log"><div class="tenue">esperando adv.log…</div></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const CLAVE = new URLSearchParams(location.search).get('k') || '';
+const $ = (id) => document.getElementById(id);
+
+let estado = null;
+let simboloSel = null;
+let tfSel = 'M5';
+let soloSenales = false;
+let ultimoLog = [];
+
+const COLOR = { ALCISTA: 'alcista', BAJISTA: 'bajista', LATERAL: 'lateral' };
+
+function claseLinea(l) {
+  if (l.includes('[SENAL]')) return 's-senal';
+  if (l.includes('[FILTRO]')) return 's-filtro';
+  if (l.includes('[CONF]')) return 's-conf';
+  if (l.includes('[CAMBIO]')) return 's-cambio';
+  if (l.includes('[EMBUDO]')) return 's-embudo';
+  if (l.includes('[AVISO H1]') || l.includes('[H1]')) return 's-h1';
+  return 's-otro';
+}
+
+function pintarSimbolos() {
+  const cont = $('simbolos');
+  const lista = (estado?.simbolos || []).map((s) => s.simbolo);
+  if (!lista.length) { cont.innerHTML = ''; return; }
+  if (!simboloSel || !lista.includes(simboloSel)) simboloSel = lista[0];
+  cont.innerHTML = lista
+    .map((n) => `<button class="ficha ${n === simboloSel ? 'on' : ''}" data-sim="${n}">${n}</button>`)
+    .join('');
+  cont.querySelectorAll('button').forEach((b) =>
+    b.addEventListener('click', () => { simboloSel = b.dataset.sim; pintarSimbolos(); pintarGrafico(); })
+  );
+}
+
+function pintarTfs() {
+  const cont = $('tfs');
+  const tfs = estado?.tfs || ['M3', 'M5', 'M15', 'M30'];
+  cont.innerHTML = tfs
+    .map((t) => `<button class="ficha ${t === tfSel ? 'on' : ''}" data-tf="${t}">${t}</button>`)
+    .join('');
+  cont.querySelectorAll('button').forEach((b) =>
+    b.addEventListener('click', () => { tfSel = b.dataset.tf; pintarTfs(); pintarGrafico(); })
+  );
+}
+
+function bloqueActual() {
+  const sim = (estado?.simbolos || []).find((s) => s.simbolo === simboloSel);
+  if (!sim) return null;
+  const blk = (sim.tf || []).find((t) => t.tf === tfSel);
+  return blk ? { sim, blk } : null;
+}
+
+function pintarDatos() {
+  const par = bloqueActual();
+  const caja = $('datos');
+  if (!par) { caja.innerHTML = '<span class="tenue">sin velas para esta combinación</span>'; return; }
+  const { sim, blk } = par;
+  if (!blk.velas || !blk.velas.length) {
+    caja.innerHTML = '<span class="tenue">el EA todavía no tiene velas suficientes</span>';
+    return;
+  }
+  const n = (v) => (v == null || isNaN(v) ? '—' : Number(v).toFixed(2));
+  caja.innerHTML = [
+    `<span class="dato">precio <b>${n(sim.precio)}</b></span>`,
+    `<span class="dato">tendencia <b class="${COLOR[blk.tend] || ''}">${blk.tend}</b></span>`,
+    `<span class="dato">EMA30 <b>${n(blk.e30)}</b></span>`,
+    `<span class="dato">EMA50 <b>${n(blk.e50)}</b></span>`,
+    `<span class="dato">EMA100 <b>${n(blk.e100)}</b></span>`,
+    `<span class="dato">ATR <b>${n(blk.atr)}</b></span>`,
+    `<span class="dato">velas <b>${blk.velas.length}</b></span>`,
+  ].join('');
+}
+
+function pintarGrafico() {
+  const par = bloqueActual();
+  const lienzo = $('lienzo');
+  $('tituloGrafico').textContent = `${simboloSel || '—'} · ${tfSel}`;
+  if (!par || !par.blk.velas || par.blk.velas.length < 2) { return; }
+
+  const dpr = window.devicePixelRatio || 1;
+  const anchoCss = lienzo.clientWidth || 600;
+  const altoCss = lienzo.clientHeight || 380;
+  lienzo.width = anchoCss * dpr;
+  lienzo.height = altoCss * dpr;
+  const g = lienzo.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, anchoCss, altoCss);
+
+  const corte = Math.max(0, par.blk.velas.length - 160);
+  const velas = par.blk.velas.slice(corte);
+  const emas = (par.blk.ema || []).slice(corte);
+  const { e30, e50, e100 } = par.blk;
+  const margen = { i: 6, d: 62, s: 8, b: 18 };
+  const ancho = anchoCss - margen.i - margen.d;
+  const alto = altoCss - margen.s - margen.b;
+
+  let min = Infinity, max = -Infinity;
+  for (const v of velas) { min = Math.min(min, v[3]); max = Math.max(max, v[2]); }
+  for (const fila of emas) for (const v of fila) if (v > 0) { min = Math.min(min, v); max = Math.max(max, v); }
+  const refs = [e30, e50, e100].filter((v) => v > 0);
+  for (const v of refs) { min = Math.min(min, v); max = Math.max(max, v); }
+  const rango = max - min || 1;
+  min -= rango * 0.05; max += rango * 0.05;
+
+  const y = (p) => margen.s + ((max - p) / (max - min)) * alto;
+  const paso = ancho / velas.length;
+  const anchoVela = Math.max(1.5, paso * 0.62);
+
+  // rejilla + precios
+  g.strokeStyle = '#1b2430'; g.fillStyle = '#5e6b7a'; g.font = '10px ui-monospace, monospace';
+  g.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const p = min + ((max - min) * k) / 4;
+    const yy = Math.round(y(p)) + 0.5;
+    g.beginPath(); g.moveTo(margen.i, yy); g.lineTo(margen.i + ancho, yy); g.stroke();
+    g.fillText(p.toFixed(1), margen.i + ancho + 6, yy + 3);
+  }
+
+  // velas
+  velas.forEach((v, i) => {
+    const [t, o, h, l, c] = v;
+    const x = margen.i + i * paso + paso / 2;
+    const sube = c >= o;
+    g.strokeStyle = sube ? '#2fbf71' : '#e05252';
+    g.fillStyle = sube ? '#2fbf7188' : '#e0525288';
+    g.beginPath(); g.moveTo(x, y(h)); g.lineTo(x, y(l)); g.stroke();
+    const yo = y(o), yc = y(c);
+    const arriba = Math.min(yo, yc);
+    const altura = Math.max(1, Math.abs(yc - yo));
+    g.fillRect(x - anchoVela / 2, arriba, anchoVela, altura);
+  });
+
+  // EMAs como curva real (el EA manda la serie alineada con las velas)
+  const estilo = getComputedStyle(document.documentElement);
+  const curvas = [[0, '--e30'], [1, '--e50'], [2, '--e100']];
+  if (emas.length) {
+    for (const [idx, variable] of curvas) {
+      g.strokeStyle = estilo.getPropertyValue(variable).trim();
+      g.lineWidth = 1.6; g.setLineDash([]);
+      g.beginPath();
+      let empezado = false;
+      emas.forEach((fila, i) => {
+        const v = fila[idx];
+        if (!(v > 0)) return;
+        const x = margen.i + i * paso + paso / 2;
+        if (!empezado) { g.moveTo(x, y(v)); empezado = true; }
+        else g.lineTo(x, y(v));
+      });
+      if (empezado) g.stroke();
+    }
+  } else {
+    // Sin serie (versión vieja del EA): el nivel actual como referencia.
+    for (const [valor, variable] of [[e30, '--e30'], [e50, '--e50'], [e100, '--e100']]) {
+      if (!(valor > 0)) continue;
+      const yy = Math.round(y(valor)) + 0.5;
+      g.strokeStyle = estilo.getPropertyValue(variable).trim();
+      g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(margen.i, yy); g.lineTo(margen.i + ancho, yy); g.stroke();
+    }
+  }
+}
+
+function pintarLog() {
+  const caja = $('log');
+  const lineas = soloSenales
+    ? ultimoLog.filter((l) => l.includes('[SENAL]') || l.includes('[FILTRO]') || l.includes('[CAMBIO]'))
+    : ultimoLog;
+  if (!lineas.length) { caja.innerHTML = '<div class="tenue">sin actividad</div>'; return; }
+  const pegadoAbajo = caja.scrollTop + caja.clientHeight >= caja.scrollHeight - 40;
+  caja.innerHTML = lineas.map((l) => `<div class="${claseLinea(l)}">${l.replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</div>`).join('');
+  if (pegadoAbajo) caja.scrollTop = caja.scrollHeight;
+}
+
+$('filtroLog').addEventListener('click', () => {
+  soloSenales = !soloSenales;
+  $('filtroLog').textContent = soloSenales ? 'solo eventos' : 'todas';
+  pintarLog();
+});
+
+async function refrescar() {
+  try {
+    const r = await fetch(`/api/estado?k=${encodeURIComponent(CLAVE)}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('http ' + r.status);
+    const datos = await r.json();
+
+    $('vivo').className = 'punto vivo';
+    $('hora').textContent = new Date().toLocaleTimeString();
+
+    if (datos.estado && !datos.estado.error) {
+      estado = datos.estado;
+      $('cuenta').textContent = `${estado.servidor || ''} · ${estado.login || ''} · ${estado.modo || ''}`;
+      const edad = estado._edadSeg;
+      $('edad').textContent = edad == null ? '' : `hace ${edad}s`;
+      pintarSimbolos(); pintarTfs(); pintarDatos(); pintarGrafico();
+    } else if (datos.estado) {
+      $('datos').innerHTML = `<span class="aviso error">${datos.estado.error}${datos.estado.detalle ? ' · ' + datos.estado.detalle : ''}</span>`;
+    }
+
+    ultimoLog = datos.log || [];
+    pintarLog();
+
+    const sen = datos.senales || [];
+    $('senales').innerHTML = sen.length
+      ? sen.slice().reverse().map((l) => `<div class="s-senal">${l.replace('[SENAL] ', '')}</div>`).join('')
+      : '<div class="tenue">sin señales todavía</div>';
+  } catch (e) {
+    $('vivo').className = 'punto muerto';
+    $('edad').textContent = 'sin conexión';
+  }
+}
+
+window.addEventListener('resize', () => pintarGrafico());
+refrescar();
+setInterval(refrescar, 2000);
+</script>
+</body>
+</html>

@@ -27,6 +27,10 @@ on:
         description: "Servidor MT5 (vacio = usar el secret MT5_SERVER)"
         default: ""
         required: false
+      panel:
+        description: "Publicar el panel web en vivo (si/no)"
+        default: "si"
+        required: true
 
 permissions:
   contents: read
@@ -71,6 +75,17 @@ jobs:
       - name: Instalar MT5 y compilar el EA
         shell: pwsh
         run: ./mt5-ea/scripts/instalar_mt5.ps1 -Fuente 'mt5-ea/EstrategiaAdversaria.mq5'
+
+      # El panel arranca en segundo plano y sobrevive al step: la web queda
+      # publicada mientras corre el EA. El enlace se manda a Telegram.
+      - name: Arrancar el panel web en vivo
+        if: ${{ inputs.panel != 'no' }}
+        shell: pwsh
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+          MT5_DIR: C:\Program Files\MetaTrader 5
+        run: ./mt5-ea/scripts/panel_web.ps1 -Puerto 8787 -Salida panel-out
 
       - name: Arrancar el EA y vigilar la sesion
         shell: pwsh
@@ -118,6 +133,7 @@ jobs:
             'MQL5/Files' = "$env:MT5_DIR\MQL5\Files"
             'MQL5/Logs'  = "$env:MT5_DIR\MQL5\Logs"
             'terminal'   = "$env:MT5_DIR\logs"
+            'panel'      = "$env:GITHUB_WORKSPACE\panel-out"
           }
           foreach ($k in $map.Keys) {
             $src = $map[$k]
@@ -126,7 +142,7 @@ jobs:
             New-Item -ItemType Directory -Force -Path $out | Out-Null
             for ($r = 1; $r -le 3; $r++) {
               Get-ChildItem -LiteralPath $src -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Extension -eq '.log' -or $_.Extension -eq '.txt' } |
+                Where-Object { $_.Extension -eq '.log' -or $_.Extension -eq '.txt' -or $_.Extension -eq '.json' } |
                 ForEach-Object {
                   $f = $_
                   try { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $out $f.Name) -Force -ErrorAction Stop }

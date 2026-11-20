@@ -130,6 +130,7 @@ struct Emb
   };
 Emb      g_emb[4];
 datetime g_embBar = 0;
+datetime g_panelBar = 0;   // ultima vela M3 volcada al panel web
 
 void EmbLog()
   {
@@ -1633,6 +1634,127 @@ void OnDeinit(const int reason)
    Log("EA detenido (reason " + IntegerToString(reason) + ")");
   }
 
+//--------------------------------------------------------------------
+//  Panel web: snapshot de lo que ve el EA
+//--------------------------------------------------------------------
+// Escribe MQL5/Files/panel_estado.json con las ultimas P_panelVelas velas de
+// cada simbolo y temporalidad, las EMAs y el ATR. NO decide nada: solo copia
+// los mismos datos que usa Revisar(). El servidor del panel (panel/panel.mjs)
+// lo sirve tal cual y el navegador dibuja. Se escribe una vez por vela M3.
+#define P_panelVelas 200
+
+void PanelEstado()
+  {
+   string j = "{";
+   j += "\"generado\":\"" + TimeToString(TimeGMT(), TIME_DATE|TIME_SECONDS) + "\"";
+   j += ",\"servidor\":\"" + EscJson(AccountInfoString(ACCOUNT_SERVER)) + "\"";
+   j += ",\"login\":" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
+   j += ",\"modo\":\"" + ((AccountInfoInteger(ACCOUNT_TRADE_MODE) == 0) ? "demo" : "real") + "\"";
+   j += ",\"velas\":" + IntegerToString(P_panelVelas);
+
+   string tfs = "";
+   for(int tfi = 0; tfi < g_nTf; tfi++)
+      tfs += (tfi > 0 ? "," : "") + "\"" + EscJson(g_tfTxtArr[tfi]) + "\"";
+   j += ",\"tfs\":[" + tfs + "]";
+
+   j += ",\"simbolos\":[";
+   int ns = ArraySize(g_est);
+   bool primero = true;
+   for(int i = 0; i < ns; i++)
+     {
+      if(StringLen(g_est[i].nombre) == 0)
+         continue;
+      if(!primero)
+         j += ",";
+      primero = false;
+
+      double precio = 0.0, spread = 0.0;
+      MqlRates rp[];
+      int mp = CopyRates(g_est[i].nombre, g_tfArr[1], 0, 1, rp);
+      if(mp > 0)
+        {
+         precio = rp[0].close;
+         if(rp[0].spread > 0)
+            spread = rp[0].spread * SymbolInfoDouble(g_est[i].nombre, SYMBOL_POINT);
+        }
+
+      j += "{\"simbolo\":\"" + EscJson(g_est[i].nombre) + "\"";
+      j += ",\"precio\":" + DoubleToString(precio, 2);
+      j += ",\"spread\":" + DoubleToString(spread, 2);
+      j += ",\"tf\":[";
+
+      for(int tfi = 0; tfi < g_nTf; tfi++)
+        {
+         if(tfi > 0)
+            j += ",";
+         j += "{\"tf\":\"" + EscJson(g_tfTxtArr[tfi]) + "\"";
+
+         MqlRates r[];
+         int n = CopyRates(g_est[i].nombre, g_tfArr[tfi], 1, P_panelVelas + P_emaFondo + 5, r);
+         if(n < P_emaFondo + 5)
+           {
+            j += ",\"tend\":\"SIN DATOS\",\"velas\":[]}";
+            continue;
+           }
+
+         double c[];
+         ArrayResize(c, n);
+         for(int k = 0; k < n; k++)
+            c[k] = r[k].close;
+         double e30[], e50[], e100[], atr[];
+         CalcEma(c, P_emaContacto, e30);
+         CalcEma(c, P_emaTecho, e50);
+         CalcEma(c, P_emaFondo, e100);
+         CalcAtr(r, P_atrPeriodo, atr);
+         int li = n - 1;
+
+         j += ",\"tend\":\"" + Tendencia(c[li], e30[li], e50[li], e100[li]) + "\"";
+         j += ",\"e30\":" + DoubleToString(e30[li], 2);
+         j += ",\"e50\":" + DoubleToString(e50[li], 2);
+         j += ",\"e100\":" + DoubleToString(e100[li], 2);
+         j += ",\"atr\":" + DoubleToString(atr[li], 2);
+
+         // [tiempo, apertura, maximo, minimo, cierre] y las tres EMAs alineadas
+         // con esas mismas velas, para que el navegador dibuje la curva real.
+         j += ",\"velas\":[";
+         int desde = n - P_panelVelas;
+         if(desde < 0)
+            desde = 0;
+         for(int k = desde; k < n; k++)
+           {
+            if(k > desde)
+               j += ",";
+            j += "[" + IntegerToString((long)r[k].time) + ","
+               + DoubleToString(r[k].open, 2) + ","
+               + DoubleToString(r[k].high, 2) + ","
+               + DoubleToString(r[k].low, 2) + ","
+               + DoubleToString(r[k].close, 2) + "]";
+           }
+         j += "],\"ema\":[";
+         for(int k = desde; k < n; k++)
+           {
+            if(k > desde)
+               j += ",";
+            j += "[" + DoubleToString(e30[k], 2) + ","
+               + DoubleToString(e50[k], 2) + ","
+               + DoubleToString(e100[k], 2) + "]";
+           }
+         j += "]}";
+        }
+      j += "]}";
+     }
+   j += "]}";
+
+   int h = FileOpen("panel_estado.json", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+     {
+      Log("no pude escribir panel_estado.json (error " + IntegerToString(GetLastError()) + ")");
+      return;
+     }
+   FileWriteString(h, j);
+   FileClose(h);
+  }
+
 // En vivo el EA trabaja con OnTimer; en el tester los timers no existen y
 // el pulso lo da OnTick (una vez por barra M1 con Model=1).
 void OnTick()
@@ -1654,6 +1776,11 @@ void OnTimer()
          if(g_embBar != 0)
             EmbLog();
          g_embBar = b3;
+        }
+      if(b3 > 0 && b3 != g_panelBar)
+        {
+         PanelEstado();
+         g_panelBar = b3;
         }
      }
 

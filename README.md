@@ -12,11 +12,31 @@ No hace falta tu PC ni tu teléfono. Lanzas el workflow y trabaja en la nube.
 mt5-ea/EstrategiaAdversaria.mq5          el EA (MQL5, se compila en el runner)
 mt5-ea/scripts/instalar_mt5.ps1          instala el terminal y compila
 mt5-ea/scripts/ejecutar_ea.ps1           configura la cuenta, arranca y vigila
-.github/workflows/mt5-adversario.yml     llama a los dos scripts
+mt5-ea/scripts/panel_web.ps1             arranca el panel y abre el túnel
+panel/panel.mjs                          servidor del panel (Node, sin deps)
+panel/index.html                         la web: velas, EMAs, señales y log
+.github/workflows/mt5-adversario.yml     llama a los scripts
 ```
 
-Toda la lógica está en los scripts: el workflow solo los ejecuta. No hay
-dependencias, ni Node, ni Python.
+Toda la lógica está en los scripts: el workflow solo los ejecuta.
+
+## Panel en vivo (móvil)
+
+Al lanzar el workflow, además del EA arranca un panel web y un túnel rápido de
+Cloudflare. **El enlace llega a tu Telegram** y se abre desde el móvil:
+
+- velas con EMA30/50/100 y la tendencia por símbolo y temporalidad;
+- las señales que salieron;
+- el `adv.log` completo en vivo (`[FILTRO]`, `[CONF]`, `[CAMBIO]`, `[EMBUDO]`)
+  para ver **por qué** no saltó una señal.
+
+El EA escribe `MQL5/Files/panel_estado.json` una vez por vela M3; el panel solo
+lee ese archivo y el log, no calcula ni decide nada. La página se refresca por
+polling cada 2 s porque el túnel rápido de Cloudflare no soporta SSE.
+
+Límites: la URL (`algo-random.trycloudflare.com`) cambia en cada corrida y
+muere cuando la corrida termina. El enlace lleva una clave aleatoria (`?k=`)
+porque el túnel es público. Con `panel: no` el workflow corre sin panel.
 
 ## Cómo sale el mensaje
 
