@@ -46,8 +46,6 @@ double P_cuerpoMin         = 0.50;
 double P_cuerpoMinAtr      = 0.10;
 int    P_caducidad         = 3;
 int    P_separacionToques  = 2;
-int    P_cooldownEntrada   = 8;
-double P_extensionMinAtr   = 1.0;
 int    P_caducidadEngano   = 12;
 // 3x. La alerta del toque NO sale en la vela de vuelta: exige velas de
 // continuacion seguidas a favor de la tendencia (cierre del lado de la
@@ -84,12 +82,6 @@ bool   P_enganoEnEma50     = false;
 // La B de cada toque (1B, 2B, 3B) es el cierre CON CUERPO que rompe el extremo
 // del impulso anterior y sigue: una entrada mas, despues de cada toque.
 bool   P_bPorRuptura       = true;
-
-// Exigir que el tramo del engano haya llegado hasta la EMA100 (enganio
-// profundo) antes de aceptar la vuelta por la EMA50.
-// OJO: en FX Vol 20 M3 el rebote de las 11:21 toco la EMA30/50 pero NO llego a
-// la EMA100; con esto en true esa senal no habria salido. Por eso va en false.
-bool   P_enganoExigeE100   = false;
 
 //--------------------------------------------------------------------
 //  Modo backtest (Strategy Tester / GitHub Actions)
@@ -185,7 +177,6 @@ struct Secuencia
    int    enganoBar;
    double enganoNivel;     // minimo/maximo del tramo (el "cuello")
    double enganoExtremo;   // punta del tramo: stop de la vuelta del engano
-   bool   enganoProfundo;  // el tramo llego hasta la EMA100
    bool   toco30;          // el retroceso en curso ya toco la EMA30
    bool   confPend;        // vuelta vista: esperando las velas de continuacion
    int    confCont;        // velas de continuacion ya cumplidas
@@ -654,22 +645,20 @@ Toque UltimoToque(const Secuencia &s)
    return z;
   }
 
-void PushToque(Secuencia &s, const Toque &t)
+// Devuelve true solo si el toque entro en la escalera. El 4.º no existe
+// (§10): no se emite, no reemplaza el nivel del 3.º y no desplaza sus stops.
+bool PushToque(Secuencia &s, const Toque &t)
   {
-   if(s.nT < 3)
-     {
-      if(s.nT == 0)
-         s.t1 = t;
-      else if(s.nT == 1)
-         s.t2 = t;
-      else
-         s.t3 = t;
-      s.nT++;
-      return;
-     }
-   s.t1 = s.t2;
-   s.t2 = s.t3;
-   s.t3 = t;
+   if(s.nT >= 3)
+      return false;
+   if(s.nT == 0)
+      s.t1 = t;
+   else if(s.nT == 1)
+      s.t2 = t;
+   else
+      s.t3 = t;
+   s.nT++;
+   return true;
   }
 
 //--------------------------------------------------------------------
@@ -699,6 +688,12 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    double c = r[i].close, h = r[i].high, l = r[i].low, o = r[i].open;
    double atrI = atr[i];
    double E30 = e30[i], E50 = e50[i], E100 = e100[i];
+   // "con cuerpo" (la definicion de la §9): >= 50 % del rango y >= 0.10 ATR.
+   // La pared de la EMA50 solo descarta el retroceso cuando la vela CIERRA
+   // con cuerpo al otro lado; pincharla con la mecha no descarta nada.
+   double cuerpoBarra = MathAbs(c - o);
+   bool   conCuerpo   = (h - l) > 0 && cuerpoBarra >= P_cuerpoMin * (h - l)
+                        && cuerpoBarra >= P_cuerpoMinAtr * atrI;
 
    // 4a + 2b. Cerrar CON CUERPO al otro lado de la EMA100 es cambio de
    // tendencia. La mecha puede pincharla sin castigo; el cierre no. Cuando
@@ -724,7 +719,6 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       s.enganoBar = -1;
       s.enganoNivel = 0;
       s.enganoExtremo = 0;
-      s.enganoProfundo = false;
       return;
      }
 
@@ -734,8 +728,9 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    // toque salia con una sola vela a favor.
    if(s.confPend)
      {
-      // 1a. cerrar al otro lado de la EMA50 descarta el retroceso entero
-      if(venta ? (c > E50) : (c < E50))
+      // 1a. cerrar CON CUERPO al otro lado de la EMA50 descarta el retroceso
+      // entero. Con la mecha pinchando la 50 no se descarta nada.
+      if((venta ? (c > E50) : (c < E50)) && conCuerpo)
         {
          if(i == g_barraActual)
             Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
@@ -771,24 +766,30 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          t.extremo = s.confExtremo;   // la punta del retroceso, no la vela de vuelta
          t.alto    = h;
          t.bajo    = l;
-         PushToque(s, t);
+         // §10: el toque 4 no existe. Si la escalera ya tiene 3, esta
+         // confirmacion no entra, no reemplaza el nivel del 3.º y no toca
+         // la raya de la B.
+         bool aceptado = PushToque(s, t);
          s.confPend = false;
          s.confCont = 0;
          s.toco30   = false;
          s.supero = false;   // el proximo toque vuelve a exigir extremo nuevo
-         // la raya que tiene que romper la B, con la punta de esta vela dentro
-         double picoB = s.pico;
-         if(picoB == 0)
-            picoB = venta ? l : h;
-         s.nivelB = venta ? MathMin(picoB, l) : MathMax(picoB, h);
-         s.bHecho = false;
-         if(i == g_barraActual)
-            g_emb[g_tfIdx].toqW++;
+         if(aceptado)
+           {
+            // la raya que tiene que romper la B, con la punta de esta vela dentro
+            double picoB = s.pico;
+            if(picoB == 0)
+               picoB = venta ? l : h;
+            s.nivelB = venta ? MathMin(picoB, l) : MathMax(picoB, h);
+            s.bHecho = false;
+            if(i == g_barraActual)
+               g_emb[g_tfIdx].toqW++;
+           }
 
          // El toque 1 tambien avisa: los tres son la misma jugada y el numero
          // es el orden del toque en la escalera (1, 2, 3). La R la pone
          // ConReset cuando la escalera nacio de un engano.
-         if(s.nT <= 3 && s.avisados != s.nT)
+         if(aceptado && s.nT <= 3 && s.avisados != s.nT)
            {
             int cr = CrucesEma30(r, e30, i, P_ventanaCruces);
             double er = ErDelTramo(r, hayT0 ? t0.bar : -1, i, P_ventanaER);
@@ -832,34 +833,18 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.engano = true;
          s.enganoNivel = venta ? l : h;
          s.enganoExtremo = venta ? h : l;
-         s.enganoProfundo = false;
         }
       else
         {
          s.enganoNivel = venta ? MathMin(s.enganoNivel, l) : MathMax(s.enganoNivel, h);
          s.enganoExtremo = venta ? MathMax(s.enganoExtremo, h) : MathMin(s.enganoExtremo, l);
         }
-      // 4a. la frontera de la EMA100 la marca el CUERPO, no la mecha: la
-      // mecha puede pincharla, cerrar al otro lado no. Si cierra, es cambio
-      // de tendencia y la seductora deja de valer.
-      if(venta ? (c > E100) : (c < E100))
-        {
-         if(!s.enganoProfundo && i == g_barraActual)
-            Log("[ENGANO] " + (venta?"VENTA":"COMPRA") + " " + g_tfTxt
-                + " anulado: cerro con cuerpo mas alla de la EMA100 (cambio de tendencia)");
-         s.enganoProfundo = true;
-        }
       s.enganoBar = i;
-      // La escalera de toques se reinicia al salir sobre la EMA50, pero el
-      // reset (la R) NO: la R solo se marca cuando la seductora entrega su
-      // senal, que es lo que el propietario llama "hacer el engano".
-      if(s.nT > 0)
-        {
-         s.nT = 0;
-         s.avisados = 0;
-         s.emitida  = false;
-         s.pico     = 0;
-        }
+      // Salir por encima de la EMA50 NO borra la escalera: la §2 solo
+      // descarta el retroceso y la §5 solo borra la escalera cuando la pila
+      // se invierte. Aqui unicamente se rearma la punta de la pata en curso,
+      // que es contra la que se mide "la tendencia avanzo" (§4).
+      s.pico     = 0;
       s.retesteo = false;
      }
 
@@ -890,7 +875,6 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.enganoBar = -1;
          s.enganoNivel = 0;
          s.enganoExtremo = 0;
-         s.enganoProfundo = false;
          return;
         }
       if(!sigueRoto || i - s.retBar > P_caducidadRetesteo)
@@ -926,7 +910,6 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
          s.enganoBar = -1;
          s.enganoNivel = 0;
          s.enganoExtremo = 0;
-         s.enganoProfundo = false;
         }
       return;
      }
@@ -944,7 +927,7 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    if(i == g_barraActual && llego30)
       g_emb[g_tfIdx].tocaW++;
 
-   if(cerroSobre50 && (s.toco30 || s.confPend))
+   if(cerroSobre50 && conCuerpo && (s.toco30 || s.confPend))
      {
       if(i == g_barraActual)
          Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
@@ -1026,21 +1009,28 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    bool enganoVivo = s.engano && (i - s.enganoBar) <= P_caducidadEngano;
    if(!HayToque(s) && !enganoVivo)
       return;
+   // La caducidad del quiebre solo vale para la rama vieja de la 2B/3B: la
+   // seductora (§6) no depende de la escalera de toques y no puede quedar
+   // muda por un toque viejo.
    Toque t4;
    ZeroMemory(t4);
+   bool toqueViejo = false;
    if(HayToque(s))
      {
       t4 = UltimoToque(s);
-      if(i <= t4.bar || (i - t4.bar) > P_caducidad)
-         return;
+      toqueViejo = (i <= t4.bar || (i - t4.bar) > P_caducidad);
      }
 
+   // Con P_bPorRuptura la B de cada toque la emite el bloque 3b (ruptura con
+   // cuerpo) y esta rama vieja de quiebre no tiene que volver a emitirla:
+   // era la que borraba la escalera entera en la vela siguiente al toque y
+   // dejaba el 2 y el 3 sin poder existir (§1, §4).
    string base = "";
-   if(HayToque(s) && s.nT >= 3)
+   if(!P_bPorRuptura && HayToque(s) && !toqueViejo && s.nT >= 3)
       base = "3B";
-   else if(HayToque(s) && s.nT == 2)
+   else if(!P_bPorRuptura && HayToque(s) && !toqueViejo && s.nT == 2)
       base = "2B";
-   else if(enganoVivo && (!P_enganoExigeE100 || s.enganoProfundo))
+   else if(enganoVivo)
       base = "1S";   // la seductora: el "1" quedo para el primer toque
    else
       return;                       // sin toque y sin engano: no hay codigo
@@ -1057,7 +1047,6 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       s.enganoBar = -1;
       s.enganoNivel = 0;
       s.enganoExtremo = 0;
-      s.enganoProfundo = false;
       return;
      }
 
@@ -1098,13 +1087,11 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
       return;
      }
 
-   // la 2B no se opera al cierre: se espera el retesteo del nivel    if(base == "2B")
-      {
-       // con P_bPorRuptura la B ya se avisa en la ruptura con cuerpo; este
-       // retesteo queda solo como alternativa apagada.
-       if(P_bPorRuptura)
-          return;
-       s.retesteo = true;
+   // la 2B no se opera al cierre: se espera el retesteo del nivel. Solo en la
+   // rama vieja: con P_bPorRuptura la B ya se avisa en la ruptura con cuerpo.
+   if(base == "2B")
+     {
+      s.retesteo = true;
       s.retBar = i;
       s.retNivel = nivelQ;
       s.retExtremo = t4.extremo;
@@ -1132,7 +1119,6 @@ void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
    s.enganoBar = -1;
    s.enganoNivel = 0;
    s.enganoExtremo = 0;
-   s.enganoProfundo = false;
   }
 
 //--------------------------------------------------------------------
@@ -1435,10 +1421,11 @@ void BtCerrar()
         }
   }
 
-// aviso vs entrada: 2/3 (y sus reseteadas) son avisos, todo lo demas entrada
+// aviso vs entrada: solo 2E/3E (y sus reseteadas) son avisos de Estructura,
+// tal y como los llama la §8. Los toques 2 y 3 son entradas de la escalera
+// (§4) y en vivo se mandan igual que el 1: con entrada, stop y nivel.
 bool BtEsEntrada(const string p)
   {
-   if(p == "2"  || p == "3"  || p == "2R"  || p == "3R")  return false;
    if(p == "2E" || p == "3E" || p == "2RE" || p == "3RE") return false;
    return true;
   }
@@ -1771,7 +1758,6 @@ void EcoParametros()
       string linea = "[EFECTIVO] " + g_tfTxtArr[t]
                      + " W{caducidad=" + IntegerToString(P_caducidad) + "v"
                      + " engano=" + IntegerToString(P_caducidadEngano) + "v"
-                     + " cooldown=" + IntegerToString(P_cooldownEntrada) + "v"
                      + " cruces=" + IntegerToString(P_ventanaCruces) + "v"
                      + " ER=" + IntegerToString(P_ventanaER) + "v}"
                      + " E{ventana=" + IntegerToString(P_estVentana) + "v"
@@ -2323,35 +2309,61 @@ string EstadoH1(const string simbolo)
 // No es un error: las dos estrategias nunca tienen el mismo patron, asi que
 // el empate es imposible. La escala baja es intencional (aviso < entrada) y
 // el hueco solo hace obvio que un aviso pierde contra cualquier entrada.
+//--------------------------------------------------------------------
+//  Prioridad: que gana cuando dos patrones caen en la MISMA vela y el
+//  MISMO lado (ADVERSARIO.md §8). Es un orden TOTAL: no hay dos codigos
+//  con el mismo rango, asi que el empate es imposible por construccion y
+//  no depende del orden en que se lleno el array de candidatos.
+//
+//  Criterio, de mas a menos, y el por que:
+//   1. la SEDUCTORA (1S) manda: su stop es la punta del tramo, un precio
+//      fijo, y no depende de donde este la escalera en ese momento.
+//   2. la ROTURA CON CUERPO (B), y dentro de ella la mas avanzada
+//      (3B > 2B > 1B): cada B exige que la tendencia rompiera otra punta.
+//   3. el TOQUE de la escalera, y dentro de el el mas temprano
+//      (1 > 2 > 3): el 1 es el toque fresco; el 3 llega con el tramo ya
+//      maduro, que es por lo que la escalera se corta en 3.
+//   4. detras de un reset (R) por delante de la original del mismo codigo:
+//      esa escalera ya sobrevivio a un engano.
+//   5. la familia ESTRUCTURA por detras de la Wonderizada: cuando las dos
+//      ven la misma jugada manda la regla madre (§1).
+//   6. los avisos de estructura, por debajo de toda entrada.
+//
+//  Para cambiar el orden basta mover un numero de la tabla.
+//--------------------------------------------------------------------
 int Prioridad(const string p)
   {
-   if(p == "3E" || p == "3RE")
-      return 6;
-   if(p == "2E" || p == "2RE")
-      return 5;
+   // 6. avisos: no son entradas
+   if(p == "3RE" || p == "3E") return 6;
+   if(p == "2RE" || p == "2E") return 5;
 
-   int tier = 0;
-   double rr = 0;
-   if(p == "3RB")      { tier = 3; rr =  0.295; }
-   else if(p == "2RB") { tier = 3; rr =  0.149; }
-   else if(p == "1S")  { tier = 2; rr =  0.067; }
-   else if(p == "1SR") { tier = 2; rr =  0.022; }
-   else if(p == "1")   { tier = 2; rr =  0.000; }
-   else if(p == "1R")  { tier = 2; rr = -0.010; }
-   else if(p == "1B")  { tier = 2; rr = -0.020; }
-   else if(p == "1RB") { tier = 2; rr = -0.030; }
-   else if(p == "3B")  { tier = 2; rr =  0.014; }
-   else if(p == "2B")  { tier = 1; rr = -0.060; }
-   else if(p == "3R")  { tier = 1; rr = -0.161; }
-   else if(p == "2")   { tier = 1; rr = -0.163; }
-   else if(p == "2R")  { tier = 1; rr = -0.196; }
-   else if(p == "3")   { tier = 1; rr = -0.239; }
-   else if(p == "3REB" || p == "3EB")
-      tier = 3;
-   else if(p == "2REB" || p == "2EB" || p == "1E" || p == "1RE")
-      tier = 2;
+   int rank = 0;
+   // 1. la seductora
+   if     (p == "1SR") rank = 20;
+   else if(p == "1S")  rank = 19;
+   // 2. la rotura con cuerpo
+   else if(p == "3RB") rank = 18;
+   else if(p == "3B")  rank = 17;
+   else if(p == "2RB") rank = 16;
+   else if(p == "2B")  rank = 15;
+   else if(p == "1RB") rank = 14;
+   else if(p == "1B")  rank = 13;
+   // 3. el toque de la escalera
+   else if(p == "1R")  rank = 12;
+   else if(p == "1")   rank = 11;
+   else if(p == "2R")  rank = 10;
+   else if(p == "2")   rank = 9;
+   else if(p == "3R")  rank = 8;
+   else if(p == "3")   rank = 7;
+   // 4. familia estructura
+   else if(p == "3REB") rank = 6;
+   else if(p == "3EB")  rank = 5;
+   else if(p == "2REB") rank = 4;
+   else if(p == "2EB")  rank = 3;
+   else if(p == "1RE")  rank = 2;
+   else if(p == "1E")   rank = 1;
    else
       return 0;
 
-   return 100 + tier * 10 + (int)MathRound(rr * 10);
+   return 100 + rank;
   }
