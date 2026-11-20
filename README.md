@@ -25,10 +25,26 @@ Toda la lógica está en los scripts: el workflow solo los ejecuta.
 Al lanzar el workflow, además del EA arranca un panel web y un túnel rápido de
 Cloudflare. **El enlace llega a tu Telegram** y se abre desde el móvil:
 
-- velas con EMA30/50/100 y la tendencia por símbolo y temporalidad;
+- **la gráfica real de MT5** (captura del terminal con `ChartScreenShot`, tal
+  como la pinta MT5, no una reconstrucción);
+- velas con EMA30/50/100 y la tendencia por símbolo y temporalidad (al tocar un
+  par se pasa a la vista de datos de ese par);
 - las señales que salieron;
 - el `adv.log` completo en vivo (`[FILTRO]`, `[CONF]`, `[CAMBIO]`, `[EMBUDO]`)
   para ver **por qué** no saltó una señal.
+
+### También en GitHub, sin túnel
+
+Cada 5 minutos el script copia la captura real (`panel_chart.png`) y el estado a
+una rama **`live`** del repo. Así puedes abrir en el móvil, sin depender del
+túnel ni de que la corrida siga viva:
+
+```
+https://github.com/<usuario>/<repo>/blob/live/panel_chart.png?raw=true
+```
+
+El primer enlace de GitHub también llega a tu Telegram. La rama `live` se
+reescribe en cada publicación (un solo commit).
 
 El EA escribe `MQL5/Files/panel_estado.json` una vez por vela M3; el panel solo
 lee ese archivo y el log, no calcula ni decide nada. La página se refresca por

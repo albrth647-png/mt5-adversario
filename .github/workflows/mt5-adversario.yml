@@ -33,7 +33,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: mt5-adversario
@@ -85,6 +85,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
           MT5_SYMBOLS: ${{ vars.MT5_SYMBOLS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           S_OVR: ${{ inputs.servidor }}
           MIN: ${{ inputs.minutos }}
           TF_IN: M5
@@ -132,7 +133,7 @@ jobs:
             New-Item -ItemType Directory -Force -Path $out | Out-Null
             for ($r = 1; $r -le 3; $r++) {
               Get-ChildItem -LiteralPath $src -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Extension -eq '.log' -or $_.Extension -eq '.txt' -or $_.Extension -eq '.json' } |
+                Where-Object { $_.Extension -eq '.log' -or $_.Extension -eq '.txt' -or $_.Extension -eq '.json' -or $_.Extension -eq '.png' } |
                 ForEach-Object {
                   $f = $_
                   try { Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $out $f.Name) -Force -ErrorAction Stop }

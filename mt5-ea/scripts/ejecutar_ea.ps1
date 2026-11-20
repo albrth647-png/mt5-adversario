@@ -232,6 +232,70 @@ $p = Start-Process -FilePath (Join-Path $Mt5Dir 'terminal64.exe') `
 Write-Host "terminal64 pid=$($p.Id) durante $Minutos min"
 
 $total = $Minutos * 60
+# ------------------------------------------------------------------- publicar
+# Copia la captura real de MT5 y el estado del EA a una rama 'live' del repo
+# para que el movil pueda verlos en GitHub (raw.githubusercontent.com) sin
+# depender del tunel de Cloudflare. Solo actua si hay token de GitHub (Actions).
+function Publicar-EnGitHub {
+  if (-not ($env:GITHUB_TOKEN -and $env:GITHUB_REPOSITORY)) { return }
+  try {
+    $tmp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+    $clone = Join-Path $tmp 'live-clone'
+    if (Test-Path $clone) { Remove-Item -Recurse -Force $clone }
+    $url = "https://x-access-token:$($env:GITHUB_TOKEN)@github.com/$($env:GITHUB_REPOSITORY).git"
+    git clone --depth 1 --branch live $url $clone 2>$null | Out-Null
+    if (-not (Test-Path (Join-Path $clone '.git'))) {
+      New-Item -ItemType Directory -Force -Path $clone | Out-Null
+      Push-Location $clone
+      git init -q 2>$null
+      git remote remove origin 2>$null | Out-Null
+      git remote add origin $url 2>$null
+      Pop-Location
+    }
+    Push-Location $clone
+    git checkout --orphan live 2>$null | Out-Null
+    git rm -rf . 2>$null | Out-Null
+    foreach ($f in @('panel_chart.png','panel_estado.json')) {
+      $src = Join-Path $files $f
+      if (Test-Path $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $clone $f) -Force }
+    }
+    $html = @'
+<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Adversario en vivo</title>
+<style>body{margin:0;background:#0b0f14;color:#d7e0ea;font:13px monospace}img{width:100%;height:auto;display:block}pre{padding:8px;white-space:pre-wrap}</style>
+<h2>grafica real de MT5</h2>
+<img src="panel_chart.png" alt="grafica MT5">
+<h2>estado del EA</h2>
+<pre id=e>...</pre>
+<script>fetch('panel_estado.json').then(r=>r.json()).then(d=>{document.getElementById('e').textContent=JSON.stringify(d,null,2)}).catch(()=>{})</script>
+'@
+    Set-Content -Path (Join-Path $clone 'index.html') -Value $html -Encoding UTF8
+    git config user.email 'github-actions[bot]@users.noreply.github.com'
+    git config user.name 'github-actions[bot]'
+    git add -A 2>$null
+    git commit -m "live $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" 2>$null | Out-Null
+    git push --force $url live 2>$null | Out-Null
+    Pop-Location
+    Write-Host "publicado en GitHub (rama live)"
+    if (-not $script:liveAvisado) {
+      $script:liveAvisado = $true
+      if ($token -and $chat) {
+        $enlace = "https://github.com/$($env:GITHUB_REPOSITORY)/blob/live/panel_chart.png?raw=true"
+        $txt = "📷 Grafica real de MT5 (se actualiza sola en GitHub):`n$enlace`n`nRama live del repo; el movil la abre sin tunel."
+        try {
+          $body = @{ chat_id = $chat; text = $txt; disable_web_page_preview = $false } | ConvertTo-Json -Compress
+          Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" -Method Post `
+            -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) | Out-Null
+          Write-Host 'enlace de GitHub enviado a Telegram'
+        } catch { Write-Warning "no pude mandar el enlace de GitHub: $($_.Exception.Message)" }
+      }
+    }
+  } catch {
+    Write-Warning "no pude publicar en GitHub: $($_.Exception.Message)"
+    try { Pop-Location } catch { }
+  }
+}
+
 for ($s = 15; $s -le $total; $s += 15) {
   Start-Sleep -Seconds 15
   if ($p.HasExited) { Write-Warning "el terminal termino solo (exit $($p.ExitCode))"; break }
@@ -240,6 +304,8 @@ for ($s = 15; $s -le $total; $s += 15) {
     Write-Host "==== minuto $($s / 60) ===="
     if (Test-Path $logEa) { Get-Content $logEa -Tail 3 } else { Write-Host 'sin adv.log todavia' }
   }
+  # cada 5 minutos publica la captura real en GitHub (rama live)
+  if ($s % 300 -eq 0) { Publicar-EnGitHub }
 }
 
 # ultimo intento antes de cerrar

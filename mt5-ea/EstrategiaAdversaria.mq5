@@ -1780,6 +1780,10 @@ void OnTimer()
       if(b3 > 0 && b3 != g_panelBar)
         {
          PanelEstado();
+         // Captura real de la grafica de MT5 (con las EMAs/indicadores tal como
+         // las pinta el terminal) para que el panel movil muestre "lo mismo de
+         // MT5" y no una reconstruccion. Se sobrescribe en cada vela M3.
+         ChartScreenShot(0, "panel_chart.png", 1280, 720);
          g_panelBar = b3;
         }
      }

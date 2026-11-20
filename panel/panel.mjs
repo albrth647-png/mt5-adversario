@@ -27,6 +27,7 @@ const CLAVE = process.env.PANEL_TOKEN || '';
 const FILES = process.env.MT5_FILES || 'C:\\Program Files\\MetaTrader 5\\MQL5\\Files';
 const RUTA_ESTADO = path.join(FILES, 'panel_estado.json');
 const RUTA_LOG = path.join(FILES, 'adv.log');
+const RUTA_CHART = path.join(FILES, 'panel_chart.png');
 
 // El log crece durante toda la sesión. Se guarda solo la cola para no leer
 // megabytes en cada consulta del móvil.
@@ -174,6 +175,22 @@ const servidor = createServer(async (req, res) => {
       velas: serie.velas || [],
       ema: serie.ema || [],
     });
+  }
+
+  // Imagen real de la grafica de MT5 (ChartScreenShot del terminal). Se sirve
+  // tal cual, sin recalcular nada; el navegador la recarga cada ciclo.
+  if (url.pathname === '/chart.png' || url.pathname === '/img') {
+    try {
+      const buf = await readFile(RUTA_CHART);
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'cache-control': 'no-store',
+        'access-control-allow-origin': '*',
+      });
+      return res.end(buf);
+    } catch {
+      return enviar(res, 404, 'text/plain; charset=utf-8', 'sin captura todavia\n');
+    }
   }
 
   if (url.pathname === '/' || url.pathname === '/index.html') {
