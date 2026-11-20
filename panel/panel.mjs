@@ -15,6 +15,7 @@
 //                 (por defecto C:\Program Files\MetaTrader 5\MQL5\Files)
 
 import { createServer } from 'node:http';
+import zlib from 'node:zlib';
 import { readFile, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -60,7 +61,14 @@ async function leerLog() {
   try {
     const todo = await readFile(RUTA_LOG);
     const desde = Math.max(0, todo.length - MAX_LOG_BYTES);
-    texto = todo.subarray(desde).toString('latin1');
+    const trozo = todo.subarray(desde);
+    try {
+      // MT5 escribe adv.log con FILE_ANSI, pero segun la build el resultado
+      // puede venir en UTF-8. Se prueba UTF-8 estricto y si no valida, latin1.
+      texto = new TextDecoder('utf-8', { fatal: true }).decode(trozo);
+    } catch {
+      texto = trozo.toString('latin1');
+    }
   } catch {
     return cacheLog;
   }
@@ -83,6 +91,40 @@ function enviar(res, codigo, tipo, cuerpo) {
   res.end(cuerpo);
 }
 
+// El snapshot del EA pesa ~250 KB (16 series de 200 velas). Mandarlo entero en
+// cada consulta del movil seria ~7 MB por minuto, asi que /api/estado va sin
+// velas y cada grafico pide su serie aparte. Ademas todo sale comprimido.
+function enviarJson(req, res, datos) {
+  const txt = JSON.stringify(datos);
+  const acepta = String(req.headers['accept-encoding'] || '');
+  if (!acepta.includes('gzip')) {
+    return enviar(res, 200, 'application/json; charset=utf-8', txt);
+  }
+  zlib.gzip(Buffer.from(txt), (err, buf) => {
+    if (err) return enviar(res, 200, 'application/json; charset=utf-8', txt);
+    res.writeHead(200, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-encoding': 'gzip',
+      'cache-control': 'no-store',
+      'access-control-allow-origin': '*',
+    });
+    res.end(buf);
+  });
+}
+
+// Copia del estado sin las series de velas: es lo que necesita la cabecera de
+// la pagina (simbolos, tendencia, precio, EMAs).
+function sinSeries(estado) {
+  if (!estado || !estado.simbolos) return estado;
+  return {
+    ...estado,
+    simbolos: estado.simbolos.map((s) => ({
+      ...s,
+      tf: (s.tf || []).map(({ velas, ema, ...resto }) => resto),
+    })),
+  };
+}
+
 const servidor = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
@@ -102,12 +144,26 @@ const servidor = createServer(async (req, res) => {
   if (url.pathname === '/api/estado') {
     const [estado, log] = await Promise.all([leerEstado(), leerLog()]);
     const senales = log.lineas.filter((l) => l.includes('[SENAL]')).slice(-60);
-    return enviar(
-      res,
-      200,
-      'application/json; charset=utf-8',
-      JSON.stringify({ ok: true, estado, log: log.lineas, senales })
-    );
+    return enviarJson(req, res, { ok: true, estado: sinSeries(estado), log: log.lineas, senales });
+  }
+
+  if (url.pathname === '/api/serie') {
+    const sim = url.searchParams.get('sim') || '';
+    const tf = url.searchParams.get('tf') || '';
+    const estado = await leerEstado();
+    const simbolo = (estado.simbolos || []).find((s) => s.simbolo === sim);
+    const serie = simbolo && (simbolo.tf || []).find((t) => t.tf === tf);
+    if (!serie) {
+      return enviarJson(req, res, { ok: false, error: 'sin serie para ' + sim + ' ' + tf });
+    }
+    return enviarJson(req, res, {
+      ok: true,
+      generado: estado.generado || '',
+      sim,
+      tf,
+      velas: serie.velas || [],
+      ema: serie.ema || [],
+    });
   }
 
   if (url.pathname === '/' || url.pathname === '/index.html') {

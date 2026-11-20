@@ -112,6 +112,9 @@ let simboloSel = null;
 let tfSel = 'M5';
 let soloSenales = false;
 let ultimoLog = [];
+let serie = null;          // velas de la serie en pantalla
+let serieClave = '';       // "simbolo|tf" que se esta dibujando
+let generadoPrev = '';     // para repedir la serie solo si el EA escribio otra
 
 const COLOR = { ALCISTA: 'alcista', BAJISTA: 'bajista', LATERAL: 'lateral' };
 
@@ -134,7 +137,11 @@ function pintarSimbolos() {
     .map((n) => `<button class="ficha ${n === simboloSel ? 'on' : ''}" data-sim="${n}">${n}</button>`)
     .join('');
   cont.querySelectorAll('button').forEach((b) =>
-    b.addEventListener('click', () => { simboloSel = b.dataset.sim; pintarSimbolos(); pintarGrafico(); })
+    b.addEventListener('click', () => {
+      simboloSel = b.dataset.sim;
+      serieClave = '';
+      pintarSimbolos(); refrescar();
+    })
   );
 }
 
@@ -145,7 +152,11 @@ function pintarTfs() {
     .map((t) => `<button class="ficha ${t === tfSel ? 'on' : ''}" data-tf="${t}">${t}</button>`)
     .join('');
   cont.querySelectorAll('button').forEach((b) =>
-    b.addEventListener('click', () => { tfSel = b.dataset.tf; pintarTfs(); pintarGrafico(); })
+    b.addEventListener('click', () => {
+      tfSel = b.dataset.tf;
+      serieClave = '';
+      pintarTfs(); refrescar();
+    })
   );
 }
 
@@ -161,8 +172,8 @@ function pintarDatos() {
   const caja = $('datos');
   if (!par) { caja.innerHTML = '<span class="tenue">sin velas para esta combinación</span>'; return; }
   const { sim, blk } = par;
-  if (!blk.velas || !blk.velas.length) {
-    caja.innerHTML = '<span class="tenue">el EA todavía no tiene velas suficientes</span>';
+  if (blk.tend === 'SIN DATOS') {
+    caja.innerHTML = '<span class="tenue">el EA todavía no tiene velas suficientes para esta temporalidad</span>';
     return;
   }
   const n = (v) => (v == null || isNaN(v) ? '—' : Number(v).toFixed(2));
@@ -173,15 +184,42 @@ function pintarDatos() {
     `<span class="dato">EMA50 <b>${n(blk.e50)}</b></span>`,
     `<span class="dato">EMA100 <b>${n(blk.e100)}</b></span>`,
     `<span class="dato">ATR <b>${n(blk.atr)}</b></span>`,
-    `<span class="dato">velas <b>${blk.velas.length}</b></span>`,
+    `<span class="dato">velas <b>${serie && serie.velas && serie.velas.length ? serie.velas.length : '—'}</b></span>`,
   ].join('');
 }
 
+async function pedirSerie() {
+  if (!simboloSel) return;
+  const clave = `${simboloSel}|${tfSel}`;
+  try {
+    const r = await fetch(
+      `/api/serie?k=${encodeURIComponent(CLAVE)}&sim=${encodeURIComponent(simboloSel)}&tf=${encodeURIComponent(tfSel)}`,
+      { cache: 'no-store' }
+    );
+    const j = await r.json();
+    if (j.ok) {
+      serie = j;
+      serieClave = clave;
+      pintarGrafico();
+    }
+  } catch {}
+}
+
 function pintarGrafico() {
-  const par = bloqueActual();
   const lienzo = $('lienzo');
   $('tituloGrafico').textContent = `${simboloSel || '—'} · ${tfSel}`;
-  if (!par || !par.blk.velas || par.blk.velas.length < 2) { return; }
+  if (!serie || !serie.velas || serie.velas.length < 2) {
+    const dpr = window.devicePixelRatio || 1;
+    lienzo.width = (lienzo.clientWidth || 300) * dpr;
+    lienzo.height = (lienzo.clientHeight || 300) * dpr;
+    const g2 = lienzo.getContext('2d');
+    g2.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g2.clearRect(0, 0, lienzo.clientWidth, lienzo.clientHeight);
+    g2.fillStyle = '#5e6b7a';
+    g2.font = '12px ui-monospace, monospace';
+    g2.fillText('esperando velas del EA…', 12, 24);
+    return;
+  }
 
   const dpr = window.devicePixelRatio || 1;
   const anchoCss = lienzo.clientWidth || 600;
@@ -192,9 +230,10 @@ function pintarGrafico() {
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, anchoCss, altoCss);
 
-  const corte = Math.max(0, par.blk.velas.length - 160);
-  const velas = par.blk.velas.slice(corte);
-  const emas = (par.blk.ema || []).slice(corte);
+  const corte = Math.max(0, serie.velas.length - 160);
+  const velas = serie.velas.slice(corte);
+  const emas = (serie.ema || []).slice(corte);
+  const par = bloqueActual() || { blk: {} };
   const { e30, e50, e100 } = par.blk;
   const margen = { i: 6, d: 62, s: 8, b: 18 };
   const ancho = anchoCss - margen.i - margen.d;
@@ -300,6 +339,14 @@ async function refrescar() {
       pintarSimbolos(); pintarTfs(); pintarDatos(); pintarGrafico();
     } else if (datos.estado) {
       $('datos').innerHTML = `<span class="aviso error">${datos.estado.error}${datos.estado.detalle ? ' · ' + datos.estado.detalle : ''}</span>`;
+    }
+
+    // La serie (velas) se pide aparte: solo cuando cambia el simbolo, la
+    // temporalidad o cuando el EA escribio un snapshot nuevo.
+    const gen = estado?.generado || '';
+    if (simboloSel && (`${simboloSel}|${tfSel}` !== serieClave || gen !== generadoPrev)) {
+      generadoPrev = gen;
+      await pedirSerie();
     }
 
     ultimoLog = datos.log || [];
