@@ -127,7 +127,14 @@ log("[3/7] EA en MQL5\\Experts")
 expertos = os.path.join(MT5DIR, "MQL5", "Experts")
 os.makedirs(expertos, exist_ok=True)
 ex5 = os.path.join(expertos, "EstrategiaAdversaria.ex5")
-pre = sorted(glob.glob(os.path.join(REPO, "bot_dir", "*.ex5")))
+candidatos_ex5 = [os.path.join(REPO, "bot_dir", "*.ex5"),
+                  os.path.join(os.getcwd(), "bot_dir", "*.ex5"),
+                  "bot_dir/*.ex5", "*.ex5"]
+pre = []
+for pat in candidatos_ex5:
+    pre += glob.glob(pat)
+pre = sorted(set(pre))
+log("   REPO=%s cwd=%s pre=%s" % (REPO, os.getcwd(), pre))
 if pre:
     # MetaEditor cuelga bajo Wine: el .ex5 llega ya compilado del job de Windows.
     shutil.copy2(pre[0], ex5)
