@@ -17,7 +17,8 @@ param(
   [string]$Desde   = '',
   [string]$Hasta   = '',
   [string]$Salida  = 'bt_out',
-  [string]$Mt5Dir  = 'C:\Program Files\MetaTrader 5'
+  [string]$Mt5Dir  = 'C:\Program Files\MetaTrader 5',
+  [int]$LimiteMin  = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,10 +69,10 @@ Get-Content $ini | Where-Object { $_ -notmatch 'Password' } | ForEach-Object { W
 # ------------------------------------------------------------------ correr
 $p = Start-Process -FilePath $term -ArgumentList '/portable', "/config:$ini" `
                    -WorkingDirectory $Mt5Dir -PassThru
-$limite = (Get-Date).AddMinutes(120)
+$limite = (Get-Date).AddMinutes($LimiteMin)
 while (-not $p.HasExited -and (Get-Date) -lt $limite) { Start-Sleep -Seconds 5 }
 if (-not $p.HasExited) {
-  Write-Host 'AVISO: el terminal no cerro en 120 min, se mata'
+  Write-Host "AVISO: el terminal no cerro en $LimiteMin min, se mata"
   try { Stop-Process -Id $p.Id -Force } catch {}
 }
 Write-Host "terminal cerrado (exit $(try { $p.ExitCode } catch { '?' }))"

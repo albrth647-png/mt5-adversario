@@ -1,0 +1,151 @@
+name: MT5 backtest (Linux/Wine)
+# Corre el EA en el Strategy Tester de MT5 sobre Wine en un runner Ubuntu.
+# Compila en un job Windows (MetaEditor cuelga bajo Wine) y pasa el .ex5
+# por artifact. Solo se baja el artifact con los CSV.
+#
+# Secrets: MT5_LOGIN, MT5_PASSWORD, MT5_SERVER (admite "a;b;c").
+on:
+  workflow_dispatch:
+    inputs:
+      simbodo:
+        description: "Simbodo (admite varios separados por ;)"
+        default: "FX Vol 20"
+        required: true
+      periodo:
+        description: "Periodo del tester (M1/M3/M5/M15)"
+        default: "M3"
+        required: true
+      desde:
+        description: "Desde (2026.10.21)"
+        default: "2026.10.21"
+        required: true
+      hasta:
+        description: "Hasta (2026.11.20)"
+        default: "2026.11.20"
+        required: true
+      limite_min:
+        description: "Minutos maximos del tester"
+        default: "30"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mt5-backtest-linux
+  cancel-in-progress: false
+
+env:
+  BT_SIMBOLO: ${{ github.event.inputs.simbodo }}
+  BT_PERIODO: ${{ github.event.inputs.periodo }}
+  BT_DESDE: ${{ github.event.inputs.desde }}
+  BT_HASTA: ${{ github.event.inputs.hasta }}
+  BT_LIMITE_MIN: ${{ github.event.inputs.limite_min }}
+  BT_LOGIN_MIN: "2"
+
+jobs:
+  compilar:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar MetaTrader 5
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          Invoke-WebRequest -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' -OutFile $exe -UseBasicParsing
+          Start-Process -FilePath $exe -ArgumentList '/auto' -Wait
+          $dir = 'C:\Program Files\MetaTrader 5'
+          for ($i = 0; $i -lt 90; $i++) {
+            if (Test-Path "$dir\terminal64.exe") { break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not (Test-Path "$dir\terminal64.exe")) { throw 'MT5 no quedo instalado' }
+
+      - name: Compilar el EA
+        shell: pwsh
+        run: |
+          $dir = 'C:\Program Files\MetaTrader 5'
+          $dst = "$dir\MQL5\Experts"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Path 'mt5-ea\EstrategiaAdversaria.mq5' -Destination $dst -Force
+          Start-Process -FilePath "$dir\metaeditor64.exe" `
+            -ArgumentList "/compile:`"$dst\EstrategiaAdversaria.mq5`"", "/log:`"$env:RUNNER_TEMP\compile.log`"" `
+            -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path "$env:RUNNER_TEMP\compile.log") {
+            Get-Content "$env:RUNNER_TEMP\compile.log" -Encoding Unicode | Select-Object -Last 15
+          }
+          $ex5 = "$dst\EstrategiaAdversaria.ex5"
+          if (-not (Test-Path $ex5)) { throw 'el EA no compilo (.ex5 ausente)' }
+          New-Item -ItemType Directory -Force -Path bot_dir | Out-Null
+          Copy-Item $ex5 -Destination 'bot_dir\EstrategiaAdversaria.ex5' -Force
+          Write-Host "ex5: $((Get-Item 'bot_dir\EstrategiaAdversaria.ex5').Length) bytes"
+
+      - name: Subir el .ex5
+        uses: actions/upload-artifact@v4
+        with:
+          name: ea-ex5
+          path: bot_dir/EstrategiaAdversaria.ex5
+          retention-days: 7
+
+  bt:
+    runs-on: ubuntu-latest
+    needs: compilar
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Comprobar secrets
+        env:
+          S_LOGIN: ${{ secrets.MT5_LOGIN }}
+          S_PASS: ${{ secrets.MT5_PASSWORD }}
+          S_SERVER: ${{ secrets.MT5_SERVER }}
+        run: |
+          if [ -z "$S_LOGIN" ] || [ -z "$S_PASS" ] || [ -z "$S_SERVER" ]; then
+            echo "Faltan secrets MT5_LOGIN/MT5_PASSWORD/MT5_SERVER"; exit 1
+          fi
+          echo "Secrets cargados."
+
+      - name: Descargar el .ex5
+        uses: actions/download-artifact@v4
+        with:
+          name: ea-ex5
+          path: bot_dir
+
+      - name: Preparar entorno Wine
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            wine wine64 wine32 xvfb python3 ca-certificates wget
+          mkdir -p bt_out
+          ls -la bot_dir
+
+      - name: Ejecutar backtest
+        env:
+          MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
+          MT5_SERVER: ${{ secrets.MT5_SERVER }}
+          BT_SIMBOLO: ${{ github.event.inputs.simbodo }}
+          BT_PERIODO: ${{ github.event.inputs.periodo }}
+          BT_DESDE: ${{ github.event.inputs.desde }}
+          BT_HASTA: ${{ github.event.inputs.hasta }}
+          BT_LIMITE_MIN: ${{ github.event.inputs.limite_min }}
+          BT_LOGIN_MIN: "2"
+        run: |
+          python3 scripts/mt5_backtest_linux.py
+          echo "--- resumen ---"
+          cat resumen.md 2>/dev/null || true
+
+      - name: Subir resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bt_out
+          path: bt_out
+          if-no-files-found: warn
+          retention-days: 14
