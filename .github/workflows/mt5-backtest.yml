@@ -27,6 +27,10 @@ on:
       hasta:
         description: "Hasta (YYYY.MM.DD). Vacio = hoy"
         default: ""
+      limite_min:
+        description: "Minutos maximos del tester por activo"
+        default: "30"
+        required: true
 
 permissions:
   contents: read
@@ -107,6 +111,7 @@ jobs:
             -Periodo '${{ matrix.periodo }}' `
             -Desde '${{ needs.prep.outputs.desde }}' `
             -Hasta '${{ needs.prep.outputs.hasta }}' `
+            -LimiteMin ${{ github.event.inputs.limite_min }} `
             -Salida 'bt_out'
 
       - name: Subir CSV
