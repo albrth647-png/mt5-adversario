@@ -278,20 +278,7 @@ function Publicar-EnGitHub {
     git commit -m "live $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" 2>$null | Out-Null
     git push --force $url live 2>$null | Out-Null
     Pop-Location
-    Write-Host "publicado en GitHub (rama live)"
-    if (-not $script:liveAvisado) {
-      $script:liveAvisado = $true
-      if ($token -and $chat) {
-        $enlace = "https://github.com/$($env:GITHUB_REPOSITORY)/blob/live/panel_chart.png?raw=true"
-        $txt = "📷 Grafica real de MT5 (se actualiza sola en GitHub):`n$enlace`n`nRama live del repo; el movil la abre sin tunel."
-        try {
-          $body = @{ chat_id = $chat; text = $txt; disable_web_page_preview = $false } | ConvertTo-Json -Compress
-          Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" -Method Post `
-            -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) | Out-Null
-          Write-Host 'enlace de GitHub enviado a Telegram'
-        } catch { Write-Warning "no pude mandar el enlace de GitHub: $($_.Exception.Message)" }
-      }
-    }
+    Write-Host "publicado en GitHub (rama live): $($env:GITHUB_REPOSITORY)/blob/live/panel_chart.png?raw=true"
   } catch {
     Write-Warning "no pude publicar en GitHub: $($_.Exception.Message)"
     try { Pop-Location } catch { }

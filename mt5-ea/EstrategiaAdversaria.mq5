@@ -1139,7 +1139,9 @@ string MensajeSenal(const string simbolo, const string tf, const Evento &ev,
    bool compra = (ev.lado == "COMPRA");
    string patron = ev.patron;
    string texto = "";
-   texto += Icono(compra) + " <b>" + ev.lado + "</b>\n";
+   // La estrategia va en el encabezado para que HCH y LIQ se distingan de
+   // un vistazo en el movil, ademas del campo 3 del formato de 7 campos.
+   texto += Icono(compra) + " <b>" + ev.lado + "</b> | <b>" + patron + "</b>\n";
    texto += "<b>1. Activo:</b> " + simbolo + "\n";
    texto += "<b>2. Temporalidad:</b> " + tf + "\n";
    string estrategia = "Hombro-Cabeza-Hombro";
