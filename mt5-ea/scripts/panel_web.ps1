@@ -46,19 +46,9 @@ $env:PANEL_TOKEN = $clave
 $env:MT5_FILES   = $files
 
 function Enviar-Enlace([string]$url) {
-  $texto = "🖥️ Panel en vivo`n$url`n`nSe apaga cuando termine la corrida."
-  if (-not ($token -and $chat)) {
-    Write-Host 'sin TELEGRAM_TOKEN/CHAT: el enlace solo queda en el log'
-    return
-  }
-  $body = @{ chat_id = $chat; text = $texto; disable_web_page_preview = $false } | ConvertTo-Json -Compress
-  try {
-    $r = Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" -Method Post `
-           -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body))
-    if ($r.ok) { Write-Host "enlace enviado a Telegram (msg $($r.result.message_id))" }
-  } catch {
-    Write-Warning "no pude mandar el enlace a Telegram: $($_.Exception.Message)"
-  }
+  # A Telegram solo van las señales: el enlace del panel queda en el log del
+  # run y en el resumen, que caduca con la corrida.
+  Write-Host "panel en vivo: $url"
 }
 
 # ------------------------------------------------------------------- node
