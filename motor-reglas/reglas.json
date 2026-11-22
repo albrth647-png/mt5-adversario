@@ -1,0 +1,119 @@
+{
+  "_nota": "Contrato de 8 campos por regla: contexto, disparador, direccion, entrada, stop, objetivo, caducidad, vetos. Todo se evalua sobre velas CERRADAS. 'entrada' siempre es la apertura de la vela siguiente al cierre del disparador (next_open). Los indicadores disponibles en las expresiones: open, high, low, close, volume, range, body, atr14, ema30, ema50, ema100, entrada, stop, y prev_/prev2_ de OHLC.",
+  "config": {
+    "spread_frac": 0.0002,
+    "slippage_frac": 0.0001,
+    "spread_mediana_frac": 0.0002,
+    "_coste_nota": "Sin columnas de spread en los CSV M1, el coste se modela como fraccion del precio (spread+slippage). Sustituir por el spread REAL medido del broker cuando exista."
+  },
+  "reglas": [
+    {
+      "id": "rebote_ema30_long",
+      "descripcion": "Rebote en EMA30 dentro de tendencia alcista H1",
+      "tf_disparo": "M5",
+      "tf_contexto": "H1",
+      "contexto": "ema30 > ema50 && ema50 > ema100",
+      "disparador": "low <= ema30*1.0005 && close > ema30 && close > open",
+      "direccion": "long",
+      "entrada": "next_open",
+      "stop": "min(low, entrada - 1.2*atr14)",
+      "objetivo": "entrada + 2*(entrada - stop)",
+      "caducidad": 12,
+      "dedupe_velas": 3,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
+    },
+    {
+      "id": "rebote_ema30_short",
+      "descripcion": "Rebote en EMA30 dentro de tendencia bajista H1 (espejo)",
+      "tf_disparo": "M5",
+      "tf_contexto": "H1",
+      "contexto": "ema30 < ema50 && ema50 < ema100",
+      "disparador": "high >= ema30*0.9995 && close < ema30 && close < open",
+      "direccion": "short",
+      "entrada": "next_open",
+      "stop": "max(high, entrada + 1.2*atr14)",
+      "objetivo": "entrada - 2*(stop - entrada)",
+      "caducidad": 12,
+      "dedupe_velas": 3,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
+    },
+    {
+      "id": "envolvente_long",
+      "descripcion": "Vela envolvente alcista en M15",
+      "tf_disparo": "M15",
+      "tf_contexto": null,
+      "contexto": null,
+      "disparador": "prev_close < prev_open && close > open && close >= prev_open && open <= prev_close && body >= 0.8*atr14",
+      "direccion": "long",
+      "entrada": "next_open",
+      "stop": "min(low, entrada - 1.2*atr14)",
+      "objetivo": "entrada + 2*(entrada - stop)",
+      "caducidad": 10,
+      "dedupe_velas": 2,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
+    },
+    {
+      "id": "envolvente_short",
+      "descripcion": "Vela envolvente bajista en M15",
+      "tf_disparo": "M15",
+      "tf_contexto": null,
+      "contexto": null,
+      "disparador": "prev_close > prev_open && close < open && close <= prev_open && open >= prev_close && body >= 0.8*atr14",
+      "direccion": "short",
+      "entrada": "next_open",
+      "stop": "max(high, entrada + 1.2*atr14)",
+      "objetivo": "entrada - 2*(stop - entrada)",
+      "caducidad": 10,
+      "dedupe_velas": 2,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
+    },
+    {
+      "id": "tres_velas_long",
+      "descripcion": "Tres velas alcistas seguidas en M15",
+      "tf_disparo": "M15",
+      "tf_contexto": null,
+      "contexto": null,
+      "disparador": "close > open && prev_close > prev_open && prev2_close > prev2_open",
+      "direccion": "long",
+      "entrada": "next_open",
+      "stop": "min(low, entrada - 1.2*atr14)",
+      "objetivo": "entrada + 2*(entrada - stop)",
+      "caducidad": 10,
+      "dedupe_velas": 2,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
+    },
+    {
+      "id": "tres_velas_short",
+      "descripcion": "Tres velas bajistas seguidas en M15",
+      "tf_disparo": "M15",
+      "tf_contexto": null,
+      "contexto": null,
+      "disparador": "close < open && prev_close < prev_open && prev2_close < prev2_open",
+      "direccion": "short",
+      "entrada": "next_open",
+      "stop": "max(high, entrada + 1.2*atr14)",
+      "objetivo": "entrada - 2*(stop - entrada)",
+      "caducidad": 10,
+      "dedupe_velas": 2,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
+    }
+  ]
+}
