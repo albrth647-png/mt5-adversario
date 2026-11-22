@@ -13,7 +13,7 @@ on:
         required: true
       periodo:
         description: "Periodo del tester (M1/M3/M5/M15)"
-        default: "M3"
+        default: "M1"
         required: true
       desde:
         description: "Desde (2026.10.21)"

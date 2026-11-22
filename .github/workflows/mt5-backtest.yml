@@ -18,8 +18,8 @@ on:
         default: "SFX Vol 20"
         required: true
       periodos:
-        description: "Temporalidades (M3,M5,M15,M30)"
-        default: "M3"
+        description: "Temporalidades (M1,M3,M5,M15,M30)"
+        default: "M1"
         required: true
       desde:
         description: "Desde (YYYY.MM.DD). Vacio = 90 dias atras"
