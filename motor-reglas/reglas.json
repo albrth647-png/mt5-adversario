@@ -114,6 +114,42 @@
         { "tipo": "rango_atr", "mult": 2.5 },
         { "tipo": "hora", "desde": 22, "hasta": 1 }
       ]
+    },
+    {
+      "id": "spike_contraccion_long",
+      "descripcion": "Tras vela >=1.5 ATR, esperar contraccion y entrar long",
+      "tf_disparo": "M5",
+      "tf_contexto": null,
+      "contexto": null,
+      "disparador": "prev2_range >= 1.5*atr14_prev2 && prev_range < prev2_range && range < prev_range && close > open",
+      "direccion": "long",
+      "entrada": "next_open",
+      "stop": "min(low, entrada - 1.2*atr14)",
+      "objetivo": "entrada + 2*(entrada - stop)",
+      "caducidad": 12,
+      "dedupe_velas": 3,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
+    },
+    {
+      "id": "spike_contraccion_short",
+      "descripcion": "Tras vela >=1.5 ATR, esperar contraccion y entrar short",
+      "tf_disparo": "M5",
+      "tf_contexto": null,
+      "contexto": null,
+      "disparador": "prev2_range >= 1.5*atr14_prev2 && prev_range < prev2_range && range < prev_range && close < open",
+      "direccion": "short",
+      "entrada": "next_open",
+      "stop": "max(high, entrada + 1.2*atr14)",
+      "objetivo": "entrada - 2*(stop - entrada)",
+      "caducidad": 12,
+      "dedupe_velas": 3,
+      "vetos": [
+        { "tipo": "rango_atr", "mult": 2.5 },
+        { "tipo": "hora", "desde": 22, "hasta": 1 }
+      ]
     }
   ]
 }

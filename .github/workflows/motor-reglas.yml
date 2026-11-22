@@ -1,0 +1,54 @@
+name: Motor de reglas
+
+# Corre el motor de reglas (Paso 1) sobre los CSV M1 versionados en datos_m1/.
+# Genera disparos.csv + resumen.md/json y los deja como artifact y en el
+# resumen del run. No necesita credenciales: solo lee velas cerradas.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'motor-reglas/**'
+      - 'datos_m1/**'
+      - '.github/workflows/motor-reglas.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  motor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Correr el motor
+        run: |
+          node motor-reglas/motor.mjs \
+            --reglas motor-reglas/reglas.json \
+            --datos datos_m1 \
+            --salida motor-reglas/salida
+          echo "--- resumen ---"
+          cat motor-reglas/salida/resumen.md
+
+      - name: Publicar el resumen en el run
+        if: always()
+        run: |
+          if [ -f motor-reglas/salida/resumen.md ]; then
+            cat motor-reglas/salida/resumen.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Subir resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: motor-reglas-salida
+          path: motor-reglas/salida
+          if-no-files-found: warn
+          retention-days: 30

@@ -160,14 +160,24 @@ function entornoBarra(bars, i, inds, extra = {}) {
   const b = bars[i];
   const p = i >= 1 ? bars[i - 1] : b;
   const p2 = i >= 2 ? bars[i - 2] : p;
+  const p3 = i >= 3 ? bars[i - 3] : p2;
   const env = {
     open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
     range: b.h - b.l, body: Math.abs(b.c - b.o),
     prev_open: p.o, prev_high: p.h, prev_low: p.l, prev_close: p.c,
+    prev_range: p.h - p.l, prev_body: Math.abs(p.c - p.o),
     prev2_open: p2.o, prev2_high: p2.h, prev2_low: p2.l, prev2_close: p2.c,
+    prev2_range: p2.h - p2.l, prev2_body: Math.abs(p2.c - p2.o),
+    prev3_open: p3.o, prev3_high: p3.h, prev3_low: p3.l, prev3_close: p3.c,
+    prev3_range: p3.h - p3.l, prev3_body: Math.abs(p3.c - p3.o),
     ...extra,
   };
   for (const [nombre, arr] of Object.entries(inds)) env[nombre] = arr[i];
+  // valores del indicador en velas anteriores (para reglas tipo "spike")
+  if (inds.atr14) {
+    env.atr14_prev = i >= 1 ? inds.atr14[i - 1] : NaN;
+    env.atr14_prev2 = i >= 2 ? inds.atr14[i - 2] : NaN;
+  }
   return env;
 }
 
