@@ -23,7 +23,7 @@ string g_tgToken   = "";
 string g_tgChat    = "";
 string g_simbolos  = "FX Vol 20,FX Vol 40,SFX Vol 20,SFX Vol 40";
 string g_tfTxt     = "M5";
-string g_tfs       = "M1,M3,M5,M15,H1";   // temporalidades que escanea el EA
+string g_tfs       = "M3,M5,M15,H1";   // temporalidades que escanea el EA
 int    g_velas     = 3000;
 int    g_latidoMin = 15;
 int    g_enviarPrecios = 0;   // 1 = enviar snapshot de precios a Telegram en cada latido
@@ -1226,7 +1226,7 @@ void CargarEnviadas()
 struct EstadoSim
   {
    string   nombre;
-   datetime ultimaBarra[8];   // por cada TF (M1,M3,M5,M15,H1...)
+   datetime ultimaBarra[8];   // por cada TF (M3,M5,M15,H1...)
    int      senales[8];       // por cada TF
    bool     avisado;
   };

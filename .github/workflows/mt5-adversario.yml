@@ -34,7 +34,7 @@ on:
         required: true
       tfs:
         description: "Temporalidades que escanea (separadas por coma)"
-        default: "M1,M3,M5,M15,H1"
+        default: "M3,M5,M15,H1"
         required: true
 
 permissions:
@@ -98,7 +98,7 @@ jobs:
           PANEL: ${{ inputs.panel }}
         run: |
           if ($env:S_OVR) { $env:MT5_SERVER = $env:S_OVR; Write-Host "servidor de prueba: $env:S_OVR" }
-          $tfs = if ($env:TFS_IN) { $env:TFS_IN } else { 'M1,M3,M5,M15,H1' }
+          $tfs = if ($env:TFS_IN) { $env:TFS_IN } else { 'M3,M5,M15,H1' }
           Write-Host "escaneo: $tfs | grafico: $env:TF_IN | panel: $env:PANEL"
           ./mt5-ea/scripts/ejecutar_ea.ps1 -Minutos ([int]$env:MIN) -Tf $env:TF_IN -Tfs $tfs -Panel $env:PANEL
 

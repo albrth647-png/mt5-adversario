@@ -1,5 +1,5 @@
 # Configura la cuenta demo, arranca el EA y vigila la sesion.
-# Uso:  .\ejecutar_ea.ps1 -Minutos 240 -Tf M5 -Tfs M1,M3,M5,M15,H1
+# Uso:  .\ejecutar_ea.ps1 -Minutos 240 -Tf M5 -Tfs M3,M5,M15,H1
 #
 # Credenciales por entorno (nunca por linea de comandos):
 #   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, TELEGRAM_TOKEN, TELEGRAM_CHAT, MT5_SYMBOLS
@@ -11,7 +11,7 @@ param(
   [int]$Minutos = 240,
   [string]$Mt5Dir = 'C:\Program Files\MetaTrader 5',
   [string]$Tf = 'M5',
-  [string]$Tfs = 'M1,M3,M5,M15,H1',   # temporalidades que escanea el EA
+  [string]$Tfs = 'M3,M5,M15,H1',   # temporalidades que escanea el EA
   [string]$Panel = 'si'   # si/no: publicar el panel web en vivo
 )
 
