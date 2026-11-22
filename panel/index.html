@@ -170,7 +170,7 @@ function pintarSimbolos() {
 
 function pintarTfs() {
   const cont = $('tfs');
-  const tfs = estado?.tfs || ['M3', 'M5', 'M15', 'M30'];
+  const tfs = estado?.tfs || ['M1', 'M3', 'M5', 'M15', 'H1'];
   cont.innerHTML = tfs
     .map((t) => `<button class="ficha ${t === tfSel ? 'on' : ''}" data-tf="${t}">${t}</button>`)
     .join('');

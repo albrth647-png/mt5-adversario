@@ -2,19 +2,19 @@
 //| EstrategiaAdversaria.mq5                                         |
 //| EA adversario para cuenta DEMO en MT5 (Windows / GitHub Actions) |
 //|                                                                  |
-//| Porta la escalera del nucleo del motor (motor-senales/nucleo.js) |
-//|   1 / 1R   seductora (salida sobre EMA50 + quiebre con cuerpo)   |
-//|   2 / 2R   2o toque a EMA30 (entrada al toque)                   |
-//|   3 / 3R   3er toque a EMA30 (entrada al toque)                  |
-//|   2B/2RB   quiebre del minimo anterior, entrada en el retesteo   |
-//|   3B/3RB   tercer toque + quiebre                                |
-//|   la R es RESET (todo junto, igual que 1RE/2RE/3RE)              |
+//| Dos estrategias independientes: cada una manda su propia senal     |
+//| por vela y lado (pueden coincidir en la misma vela):               |
+//|   HCH   hombro-cabeza-hombro bajista  (VENTA)                    |
+//|   HCHi  hombro-cabeza-hombro invertido (COMPRA)                  |
+//|   LIQ   barrido de liquidez: la mecha perfora un swing, vuelve a |
+//|         cerrar dentro y el precio rebota 1,5 ATR                 |
 //|                                                                  |
+//| Temporalidades por defecto: M1, M3, M5, M15 y H1 (adv.cfg: tfs=).  |
 //| No opera: lee velas y manda la senal a Telegram por WebRequest.  |
 //| La cuenta demo solo se usa para tener el feed del broker real.   |
 //+------------------------------------------------------------------+
 #property version   "1.00"
-#property description "Escalera del video 03 sobre la cuenta DEMO; senal a Telegram."
+#property description "HCH + barrido de liquidez sobre la cuenta DEMO; senal a Telegram."
 
 //--------------------------------------------------------------------
 //  Configuracion: se lee de  <datos>/MQL5/Files/adv.cfg
@@ -23,62 +23,66 @@ string g_tgToken   = "";
 string g_tgChat    = "";
 string g_simbolos  = "FX Vol 20,FX Vol 40,SFX Vol 20,SFX Vol 40";
 string g_tfTxt     = "M5";
+string g_tfs       = "M1,M3,M5,M15,H1";   // temporalidades que escanea el EA
 int    g_velas     = 3000;
 int    g_latidoMin = 15;
 int    g_enviarPrecios = 0;   // 1 = enviar snapshot de precios a Telegram en cada latido
 
-// Multi-TF: el EA procesa estas 4 temporalidades en un solo terminal
+// Multi-TF: el EA procesa estas temporalidades en un solo terminal
 string           g_tfTxtArr[];
 ENUM_TIMEFRAMES  g_tfArr[];
-int              g_nTf      = 4;
+int              g_nTf      = 5;
+int              g_iRef     = 0;   // indice de la TF de referencia (M5 si esta)
 ENUM_TIMEFRAMES  g_tf      = PERIOD_M5;
 
 //--------------------------------------------------------------------
-//  Parametros de la escalera: copiados de PARAMS en nucleo.js
+//  Parametros base: EMAs y ATR (las EMAs solo etiquetan la tendencia)
 //--------------------------------------------------------------------
 int    P_emaContacto       = 30;
 int    P_emaTecho          = 50;
 int    P_emaFondo          = 100;
 int    P_atrPeriodo        = 14;
-double P_tolToqueAtr       = 0.30;
-int    P_ventanaMin        = 12;
-double P_cuerpoMin         = 0.50;
-double P_cuerpoMinAtr      = 0.10;
-int    P_caducidad         = 3;
-int    P_separacionToques  = 2;
-int    P_caducidadEngano   = 12;
-// 3x. La alerta del toque NO sale en la vela de vuelta: exige velas de
-// continuacion seguidas a favor de la tendencia (cierre del lado de la
-// apertura) DESPUES de la vuelta. La entrada es el cierre de la ultima.
-int    P_velasConfirmacion = 2;
-int    P_caducidadRetesteo = 3;
-double P_tolRetesteoAtr    = 0.30;
-// Filtros anti-ruido (precio pegado a EMA30)
-int    P_ventanaCruces     = 12;
-// Bloqueo por chop: 3 cruces de la EMA30 en 12 velas es lateral, pero 3 es
-// demasiado estricto (con ER=0.50, un tramo claramente direccional, ya se
-// bloqueaba). Se exige mas de un tercio de la ventana.
-int    P_minCrucesBloqueo  = 4;
-int    P_ventanaER         = 10;    // ventana corta: el ER de 20 castiga el retroceso
-// 0.22 medido en M3 sobre la vela del quiebre es inalcanzable: el quiebre
-// llega justo despues del retroceso y esa ventana de 10 velas lleva dentro
-// el retroceso, asi que el ER se hunde. Caso real bloqueado: ER=0.18 con
-// cruces=0 y separaciones 1.14/2.89 (nada mas fallaba).
-double P_erMinQuiebre      = 0.15;
-// Una sola entrada por secuencia: si ya salio la 2 (o la 3), no se emite
-// despues la 2B/3B del mismo movimiento. Ponlo en false para comparar.
-bool   P_unaPorSecuencia   = true;
+//--------------------------------------------------------------------
+//  Estrategia HCH (Hombro-Cabeza-Hombro): parametros del indicador
+//  HombroCabezaHombro.mq5, con sus mismos valores por defecto.
+//--------------------------------------------------------------------
+int    P_hchAtrPeriodo    = 14;     // periodo del ATR
+double P_hchZZAtr         = 2.0;    // umbral del zigzag (x ATR)
+int    P_hchLookback      = 1500;   // velas analizadas
+double P_hchMinScore      = 75.0;   // puntuacion minima (0-100)
+double P_hchMinPatronAtr  = 2.5;    // altura minima del patron (x ATR)
+double P_hchMinCabeza     = 0.10;   // cabeza sobre hombros (fraccion)
+double P_hchTolHombros    = 0.40;   // asimetria maxima de hombros
+double P_hchMinTiempo     = 0.35;   // simetria temporal minima
+double P_hchTolCuello     = 0.60;   // inclinacion maxima del cuello
+double P_hchMinHombroFrac = 0.20;   // hombro minimo / cabeza
+int    P_hchMinVelas      = 12;     // velas minimas del patron
+int    P_hchMaxVelas      = 250;    // velas maximas del patron
+int    P_hchVelasTend     = 30;     // velas para la tendencia previa
+double P_hchTendAtr       = 4.0;    // tendencia previa ideal (x ATR)
+double P_hchBufRuptura    = 0.15;   // margen de ruptura del cuello (x ATR)
+int    P_hchMaxEspera     = 40;     // velas maximas para romper el cuello
+bool   P_hchStopCabeza    = false;  // false = stop tras el hombro derecho
+double P_hchBufStop       = 0.25;   // margen del stop (x ATR)
 
-// Disparo de la vuelta del engano (codigo "1S", la seductora).
-// false -> la seductora ORIGINAL: el precio cierra mas alla de la EMA50
-//          (engaño), vuelve, y la senal es el cierre con cuerpo que rompe el
-//          minimo del tramo del engano. Es el comportamiento por defecto.
-// true  -> variante: la senal sale solo con cerrar de vuelta por la EMA50,
-//          sin exigir la ruptura del minimo del tramo.
-bool   P_enganoEnEma50     = false;
-// La B de cada toque (1B, 2B, 3B) es el cierre CON CUERPO que rompe el extremo
-// del impulso anterior y sigue: una entrada mas, despues de cada toque.
-bool   P_bPorRuptura       = true;
+//--------------------------------------------------------------------
+//  Estrategia BARRIDO DE LIQUIDEZ: parametros del indicador
+//  BarridoLiquidez.mq5, con sus mismos valores por defecto.
+//--------------------------------------------------------------------
+int    P_liqSwing         = 5;      // velas a cada lado de un swing
+int    P_liqAtrPeriodo    = 14;     // periodo del ATR
+int    P_liqMaxEdadNivel  = 400;    // antiguedad maxima de un nivel (velas)
+double P_liqMinPerfora    = 0.10;   // perforacion minima del nivel (x ATR)
+double P_liqMaxPerfora    = 3.00;   // perforacion maxima; mas es ruptura (x ATR)
+int    P_liqMaxBarrido    = 4;      // velas maximas del barrido
+double P_liqMechaMin      = 0.40;   // mecha minima / rango de la vela
+double P_liqMechaAtr      = 0.30;   // mecha minima (x ATR)
+double P_liqReboteAtr     = 1.50;   // rebote minimo desde el extremo (x ATR)
+int    P_liqReboteVelas   = 10;     // velas maximas para el rebote
+double P_liqBufRuptura    = 0.10;   // margen para dar la zona por rota (x ATR)
+bool   P_liqColorContra   = true;   // la vela del extremo debe ser de color contrario
+bool   P_liqAlcista       = true;   // barrido de minimos (esperando subida)
+bool   P_liqBajista       = true;   // barrido de maximos (esperando bajada)
 
 //--------------------------------------------------------------------
 //  Modo backtest (Strategy Tester / GitHub Actions)
@@ -91,13 +95,13 @@ bool   P_bPorRuptura       = true;
 bool   InpBacktest   = false;   // forzar modo backtest (el tester lo activa solo)
 string InpBtCarpeta  = "bt";    // subcarpeta en la carpeta COMUN de MT5
 bool   InpBtBarras   = true;    // exportar barras (necesario para simular SL/TP)
-int    InpBtVentana  = 600;     // velas de calculo por vela cerrada (EMA100 ya converge)
+int    InpBtVentana  = 1600;    // velas de calculo por vela cerrada (HCH mira 1500)
 bool   InpBtLog      = false;   // escribir el log completo (muy lento en backtest)
 
 bool     g_bt = false;
 int      g_btHsen = INVALID_HANDLE;
-int      g_btHbar[4];
-datetime g_btUltBarra[4];
+int      g_btHbar[8];
+datetime g_btUltBarra[8];
 int      g_btEventos = 0;
 
 datetime g_ultimoLatido = 0;
@@ -107,96 +111,56 @@ int      g_tfIdx         = 0;    // temporalidad en curso (0..3), para el embudo
 //--------------------------------------------------------------------
 //  Embudo por temporalidad: cuantos candidatos mueren en cada puerta de
 //  la vela cerrada. Se acumula y se imprime una vez por vela M3 cerrada.
-//  Sin esto el log solo enseña los candidatos que llegaron a la ultima
+//  Sin esto el log solo enseña los patrones que llegaron a la ultima
 //  puerta; el resto desaparece sin rastro.
-//  En Estructura el reparto es exacto y suma lo mismo que "rompe":
-//     rompe = noAlinE + blqCruz + blqER + yaLa + emi
+//     patrones = completos + invalidados + expirados + rotos + emite
 //--------------------------------------------------------------------
 struct Emb
   {
-   int tocaW;      // Wonderizada: velas alineadas que tocaron la EMA30
-   int noAlinW;    // Wonderizada: velas que murieron en la pila EMA
-   int toqW;       // Wonderizada: toques que entraron en la escalera
-   int blqW;       // Wonderizada: toque 2/3 frenado por cruces o ER
-   int emiW;       // Wonderizada: toque 2/3 que salio
-   int imp;        // Estructura: impulsos detectados
-   int noAlinE;    // Estructura: quiebres con la pila sin alinear
-   int toq;        // Estructura: toques de retroceso validos
-   int rompe;      // Estructura: quiebres vistos
-   int blqCruz;    // Estructura: bloqueados por cruces
-   int blqER;      // Estructura: bloqueados por ER
-   int yaLa;       // Estructura: suprimidos por una-por-secuencia
-   int emi;        // Estructura: quiebres que salieron
+   int patrones;     // ventanas de 5 pivotes evaluadas
+   int completos;    // candidatos que pasan reglas duras + score
+   int rotos;        // ruptura en una vela anterior (no se emite)
+   int invalidados;  // superaron la cabeza antes de romper
+   int expirados;    // no rompieron el cuello a tiempo
+   int emitidos;     // senales HCH emitidas en la vela cerrada
+   int liqNiveles;   // swings evaluados como nivel de liquidez
+   int liqEmite;     // barridos con rebote confirmado en la vela cerrada
   };
-Emb      g_emb[4];
+Emb      g_emb[8];
 datetime g_embBar = 0;
 datetime g_panelBar = 0;   // ultima vela M3 volcada al panel web
 
 void EmbLog()
   {
    int nt = ArraySize(g_tfTxtArr);
-   for(int k = 0; k < 4; k++)
+   if(nt > 8)
+      nt = 8;
+   for(int k = 0; k < nt; k++)
      {
       Emb e = g_emb[k];
-      if(e.tocaW + e.noAlinW + e.toqW + e.blqW + e.emiW + e.imp + e.noAlinE
-         + e.toq + e.rompe + e.blqCruz + e.blqER + e.yaLa + e.emi == 0)
+      if(e.patrones + e.completos + e.rotos + e.invalidados + e.expirados + e.emitidos
+         + e.liqNiveles + e.liqEmite == 0)
          continue;
       string tf = IntegerToString(k);
       if(k < nt)
          tf = g_tfTxtArr[k];
       Log("[EMBUDO] " + tf
-          + " W{toca=" + IntegerToString(e.tocaW) + " noAlin=" + IntegerToString(e.noAlinW)
-          + " toques=" + IntegerToString(e.toqW) + " bloquea=" + IntegerToString(e.blqW)
-          + " emite=" + IntegerToString(e.emiW) + "}"
-          + " E{imp=" + IntegerToString(e.imp) + " noAlin=" + IntegerToString(e.noAlinE)
-          + " toques=" + IntegerToString(e.toq) + " rompe=" + IntegerToString(e.rompe)
-          + " cruz=" + IntegerToString(e.blqCruz) + " ER=" + IntegerToString(e.blqER)
-          + " yaLa=" + IntegerToString(e.yaLa) + " emite=" + IntegerToString(e.emi) + "}");
+          + " HCH{patrones=" + IntegerToString(e.patrones)
+          + " completos=" + IntegerToString(e.completos)
+          + " rotos=" + IntegerToString(e.rotos)
+          + " invalidados=" + IntegerToString(e.invalidados)
+          + " expirados=" + IntegerToString(e.expirados)
+          + " emite=" + IntegerToString(e.emitidos) + "}"
+          + " LIQ{niveles=" + IntegerToString(e.liqNiveles)
+          + " emite=" + IntegerToString(e.liqEmite) + "}");
      }
-   for(int k = 0; k < 4; k++)
+   for(int k = 0; k < 8; k++)
       ZeroMemory(g_emb[k]);
   }
 
 //--------------------------------------------------------------------
 //  Estructuras
 //--------------------------------------------------------------------
-struct Toque
-  {
-   int    bar;
-   double nivel;
-   double extremo;
-   double alto;
-   double bajo;
-  };
-
-struct Secuencia
-  {
-   bool   engano;
-   int    enganoBar;
-   double enganoNivel;     // minimo/maximo del tramo (el "cuello")
-   double enganoExtremo;   // punta del tramo: stop de la vuelta del engano
-   bool   toco30;          // el retroceso en curso ya toco la EMA30
-   bool   confPend;        // vuelta vista: esperando las velas de continuacion
-   int    confCont;        // velas de continuacion ya cumplidas
-   double confExtremo;     // punta del retroceso + confirmacion: stop del toque
-   bool   enganoBloq;      // el engano quedo anulado por cerrar sobre la EMA100
-   double toco30Extremo;   // punta del retroceso: stop y techo del tramo
-   bool   supero;          // entre el toque anterior y este hubo extremo nuevo
-   double pico;            // extremo de la pata en curso: "el maximo mas previo"
-   double nivelB;          // la raya que rompe la entrada B de ese toque
-   bool   bHecho;          // la B de ese toque ya se aviso
-   Toque  t1, t2, t3;
-   int    nT;
-   int    ciclo;
-   int    avisados;
-   bool   emitida;      // ya se entrego una entrada en este ciclo
-   bool   retesteo;
-   int    retBar;
-   double retNivel;
-   double retExtremo;
-   int    ultimaEntrada;
-  };
-
 struct Evento
   {
    int    bar;
@@ -205,6 +169,8 @@ struct Evento
    double precio;
    double invalida;
    double nivel;
+   double score;
+   int    prio;      // 2 = barrido de liquidez, 1 = HCH
    string tendencia;
   };
 
@@ -304,27 +270,6 @@ string TendenciaTxt(const string t)
    if(t == "BAJISTA")
       return "BAJISTA (EMA30 &lt; EMA50 &lt; EMA100)";
    return "LATERAL (precio y EMAs no alineados)";
-  }
-
-// La R es de RESET y va pegada delante de la familia:
-//   Wonderizada:  1 -> 1R, 2 -> 2R, 3 -> 3R, 2B -> 2RB, 3B -> 3RB
-//   Estructura: 1E -> 1RE, 2E -> 2RE, 3E -> 3RE, 2EB -> 2REB, 3EB -> 3REB
-string ConReset(const string base, const int ciclo)
-  {
-   if(ciclo < 1)
-      return base;
-   if(base == "1S")  return "1SR";
-   if(base == "1B")  return "1RB";
-   if(base == "2")   return "2R";
-   if(base == "3")   return "3R";
-   if(base == "2B")  return "2RB";
-   if(base == "3B")  return "3RB";
-   if(base == "1E")  return "1RE";
-   if(base == "2E")  return "2RE";
-   if(base == "3E")  return "3RE";
-   if(base == "2EB") return "2REB";
-   if(base == "3EB") return "3REB";
-   return base + "R";
   }
 
 //--------------------------------------------------------------------
@@ -459,6 +404,7 @@ ENUM_TIMEFRAMES TfDeTexto(const string txt)
    string u = txt;
    StringToUpper(u);
    if(u == "M1")  return PERIOD_M1;
+   if(u == "M3")  return PERIOD_M3;
    if(u == "M5")  return PERIOD_M5;
    if(u == "M15") return PERIOD_M15;
    if(u == "M30") return PERIOD_M30;
@@ -500,6 +446,8 @@ bool CargarCfg(const string archivo)
          g_latidoMin = (int)StringToInteger(v);
       else if(k == "precios")
          g_enviarPrecios = (int)StringToInteger(v);
+      else if(k == "tfs")
+         g_tfs = v;
      }
    FileClose(h);
    return true;
@@ -565,593 +513,619 @@ string Tendencia(const double cierre, const double e30, const double e50, const 
    return "LATERAL";
   }
 
-// Filtros anti-ruido: cruces de la EMA30 y eficiencia del movimiento
-int CrucesEma30(const MqlRates &r[], const double &e30[], const int i, const int ventana)
+//--------------------------------------------------------------------
+//  Estrategia HCH (Hombro-Cabeza-Hombro)
+//  Port del indicador HombroCabezaHombro.mq5: pivotes zigzag 2xATR,
+//  reglas duras, puntuacion difusa 0..100 y ruptura del cuello.
+//  Todo se evalua sobre velas CERRADAS (r[] es historico cerrado).
+//--------------------------------------------------------------------
+#define HCH_TMPL 40
+
+struct HPivote
   {
-   int ini = i - ventana + 1;
-   if(ini < 0)
-      ini = 0;
-   int cruces = 0;
-   int ladoAnt = 0;
-   for(int k = ini; k <= i; k++)
+   int    idx;      // indice en r[]
+   double precio;
+   int    tipo;     // +1 techo, -1 suelo
+  };
+
+struct HPatron
+  {
+   int    dir;        // +1 bajista (techos), -1 invertido (suelos)
+   int    ix[5];      // HI, valle1, cabeza, valle2, HD
+   double px[5];
+   double score;
+   double cabezaH;    // altura cabeza-cuello
+  };
+
+double HchClamp(const double x)
+  {
+   if(x < 0.0)
+      return 0.0;
+   if(x > 1.0)
+      return 1.0;
+   return x;
+  }
+
+double HchAtrAt(const double &atr[], const int desde, const int hasta, const int j)
+  {
+   int k = j;
+   if(k < desde)
+      k = desde;
+   if(k > hasta)
+      k = hasta;
+   return MathMax(atr[k], _Point);
+  }
+
+// Misma semilla y recursion que ComputeATR del indicador.
+void HchAtr(const MqlRates &r[], const int desde, const int hasta, double &atr[])
+  {
+   ArrayResize(atr, hasta + 1);
+   ArrayInitialize(atr, 0.0);
+   double a = 0.0;
+   for(int k = desde; k <= hasta; k++)
      {
-      int lado = 0;
-      if(r[k].close > e30[k])
-         lado = 1;
-      else if(r[k].close < e30[k])
-         lado = -1;
-      if(lado == 0)
-         continue;
-      if(ladoAnt != 0 && lado != ladoAnt)
-         cruces++;
-      ladoAnt = lado;
+      double tr = r[k].high - r[k].low;
+      if(k > 0)
+         tr = MathMax(tr, MathMax(MathAbs(r[k].high - r[k-1].close),
+                                  MathAbs(r[k].low  - r[k-1].close)));
+      int n = k - desde;
+      if(n == 0)
+         a = tr;
+      else if(n < P_hchAtrPeriodo)
+         a = (a * n + tr) / (n + 1);
+      else
+         a = (a * (P_hchAtrPeriodo - 1) + tr) / P_hchAtrPeriodo;
+      atr[k] = a;
      }
-   return cruces;
   }
 
-double Eficiencia(const MqlRates &r[], const int i, const int ventana)
+void HchAddPivote(HPivote &piv[], int &n, const int idx, const double precio, const int tipo)
   {
-   int ini = i - ventana;
-   if(ini < 0)
-      return 1.0;
-   double total = MathAbs(r[i].close - r[ini].close);
-   double suma = 0;
-   for(int k = ini + 1; k <= i; k++)
-      suma += MathAbs(r[k].close - r[k-1].close);
-   if(suma <= 0)
-      return 1.0;
-   return total / suma;
+   if(n > 0 && piv[n-1].tipo == tipo)
+      return;
+   ArrayResize(piv, n + 1, 256);
+   piv[n].idx    = idx;
+   piv[n].precio = precio;
+   piv[n].tipo   = tipo;
+   n++;
   }
 
-// ER del tramo que origino el patron. La escalera emite justo DESPUES de un
-// retroceso, y el retroceso es lo que hunde el ER de la ventana corta: medido
-// solo en la vela de emision, el filtro rechazaba la tendencia sana que esta
-// respirando. Se mide tambien al final del impulso y vale el mejor de los dos.
-double ErDelTramo(const MqlRates &r[], const int barImpulso, const int barAhora, const int ventana)
+// Zigzag con umbral en ATR (igual que BuildPivots).
+void HchPivotes(const MqlRates &r[], const int s, const int e,
+                const double &atr[], const int atrDesde, const int atrHasta,
+                HPivote &piv[], int &nPiv)
   {
-   double erAhora = Eficiencia(r, barAhora, ventana);
-   if(barImpulso < 0 || barImpulso >= barAhora)
-      return erAhora;
-   double erImpulso = Eficiencia(r, barImpulso, ventana);
-   return MathMax(erAhora, erImpulso);
+   nPiv = 0;
+   ArrayResize(piv, 0);
+   int    dir  = 0;
+   double hiP  = r[s].high, loP = r[s].low;
+   int    hiI  = s, loI = s;
+   double extP = 0.0;
+   int    extI = s;
+
+   for(int i = s + 1; i <= e; i++)
+     {
+      double thr = P_hchZZAtr * HchAtrAt(atr, atrDesde, atrHasta, i);
+
+      if(dir == 0)
+        {
+         if(r[i].high > hiP) { hiP = r[i].high; hiI = i; }
+         if(r[i].low  < loP) { loP = r[i].low;  loI = i; }
+         if(hiP - loP >= thr)
+           {
+            if(loI < hiI)      { HchAddPivote(piv, nPiv, loI, loP, -1); dir = 1;  extP = hiP; extI = hiI; }
+            else if(hiI < loI) { HchAddPivote(piv, nPiv, hiI, hiP, +1); dir = -1; extP = loP; extI = loI; }
+           }
+        }
+      else if(dir == 1)
+        {
+         if(r[i].high > extP)
+           { extP = r[i].high; extI = i; }
+         else if(extP - r[i].low >= thr)
+           { HchAddPivote(piv, nPiv, extI, extP, +1); dir = -1; extP = r[i].low; extI = i; }
+        }
+      else
+        {
+         if(r[i].low < extP)
+           { extP = r[i].low; extI = i; }
+         else if(r[i].high - extP >= thr)
+           { HchAddPivote(piv, nPiv, extI, extP, -1); dir = 1; extP = r[i].high; extI = i; }
+        }
+     }
   }
 
-//--------------------------------------------------------------------
-//  Cola de toques (maximo 3, como s.toques en nucleo.js)
-//--------------------------------------------------------------------
-void NuevaSecuencia(Secuencia &s)
+// Precio del cuello (recta valle1-valle2) en la vela x.
+double HchCuello(const HPatron &p, const int x)
   {
-   ZeroMemory(s);
-   s.ultimaEntrada = -100000;
+   double dx = (double)(p.ix[3] - p.ix[1]);
+   if(dx <= 0.0)
+      return p.px[3];
+   return p.px[1] + (p.px[3] - p.px[1]) * ((double)(x - p.ix[1])) / dx;
   }
 
-bool HayToque(const Secuencia &s)
+// Forma ideal normalizada: HI 0.55 - valle 0 - cabeza 1 - valle 0 - HD 0.55
+double HchPlantilla(const double t)
   {
-   return s.nT > 0;
+   if(t <= 0.25)
+      return 0.55 * (1.0 - t / 0.25);
+   if(t <= 0.50)
+      return (t - 0.25) / 0.25;
+   if(t <= 0.75)
+      return 1.0 - (t - 0.50) / 0.25;
+   return 0.55 * (t - 0.75) / 0.25;
   }
 
-Toque UltimoToque(const Secuencia &s)
+// Correlacion de Pearson entre el recorrido real y la plantilla.
+double HchScorePlantilla(const MqlRates &r[], const int dir, const int i0, const int i4)
   {
-   if(s.nT == 3)
-      return s.t3;
-   if(s.nT == 2)
-      return s.t2;
-   if(s.nT == 1)
-      return s.t1;
-   Toque z;
-   ZeroMemory(z);
-   return z;
+   double x[HCH_TMPL], y[HCH_TMPL];
+   double mx = 0.0, my = 0.0;
+
+   for(int k = 0; k < HCH_TMPL; k++)
+     {
+      double t   = (double)k / (double)(HCH_TMPL - 1);
+      int    idx = i0 + (int)MathRound(t * (double)(i4 - i0));
+      if(idx < i0) idx = i0;
+      if(idx > i4) idx = i4;
+      x[k] = dir * r[idx].close;
+      y[k] = HchPlantilla(t);
+      mx += x[k];
+      my += y[k];
+     }
+   mx /= HCH_TMPL;
+   my /= HCH_TMPL;
+
+   double sxx = 0.0, syy = 0.0, sxy = 0.0;
+   for(int k = 0; k < HCH_TMPL; k++)
+     {
+      double dx = x[k] - mx;
+      double dy = y[k] - my;
+      sxx += dx * dx;
+      syy += dy * dy;
+      sxy += dx * dy;
+     }
+   if(sxx <= 0.0 || syy <= 0.0)
+      return 0.0;
+   double corr = sxy / MathSqrt(sxx * syy);
+   return HchClamp((corr - 0.30) / 0.60);
   }
 
-// Devuelve true solo si el toque entro en la escalera. El 4.º no existe
-// (§10): no se emite, no reemplaza el nivel del 3.º y no desplaza sus stops.
-bool PushToque(Secuencia &s, const Toque &t)
+// Movimiento previo al hombro izquierdo, en ATR (igual que PriorMoveATR).
+double HchTendenciaAtr(const MqlRates &r[], const int dir, const int i0,
+                       const double precioPivote, const double &atr[],
+                       const int atrDesde, const int atrHasta)
   {
-   if(s.nT >= 3)
+   int    desde = MathMax(0, i0 - P_hchVelasTend);
+   double a     = HchAtrAt(atr, atrDesde, atrHasta, i0);
+   if(dir > 0)
+     {
+      double lo = r[desde].low;
+      for(int k = desde + 1; k <= i0; k++)
+         if(r[k].low < lo)
+            lo = r[k].low;
+      return (precioPivote - lo) / a;
+     }
+   double hi = r[desde].high;
+   for(int k = desde + 1; k <= i0; k++)
+      if(r[k].high > hi)
+         hi = r[k].high;
+   return (hi - precioPivote) / a;
+  }
+
+// Evalua 5 pivotes consecutivos como candidato a HCH (igual que EvalCandidate).
+bool HchEvaluar(const MqlRates &r[], const HPivote &piv[], const int k, const int dir,
+                const double &atr[], const int atrDesde, const int atrHasta,
+                HPatron &c)
+  {
+   double v[5];
+   int    ix[5];
+   for(int j = 0; j < 5; j++)
+     {
+      ix[j] = piv[k + j].idx;
+      v[j]  = dir * piv[k + j].precio;
+     }
+
+   // --- reglas duras
+   if(!(v[2] > v[0] && v[2] > v[4]))
       return false;
-   if(s.nT == 0)
-      s.t1 = t;
-   else if(s.nT == 1)
-      s.t2 = t;
-   else
-      s.t3 = t;
-   s.nT++;
+   if(!(v[1] < v[0] && v[1] < v[2] && v[3] < v[2] && v[3] < v[4]))
+      return false;
+
+   int total = ix[4] - ix[0];
+   if(total < P_hchMinVelas || total > P_hchMaxVelas)
+      return false;
+
+   int tL = ix[2] - ix[0];
+   int tR = ix[4] - ix[2];
+   if(tL < 2 || tR < 2)
+      return false;
+   double ratio = (double)MathMin(tL, tR) / (double)MathMax(tL, tR);
+   if(ratio < P_hchMinTiempo)
+      return false;
+
+   double dxn = (double)(ix[3] - ix[1]);
+   if(dxn <= 0.0)
+      return false;
+   double pendiente     = (v[3] - v[1]) / dxn;
+   double cuelloCabeza  = v[1] + pendiente * (double)(ix[2] - ix[1]);
+   double altura        = v[2] - cuelloCabeza;
+   if(altura <= 0.0)
+      return false;
+
+   double a = HchAtrAt(atr, atrDesde, atrHasta, ix[2]);
+   if(altura < P_hchMinPatronAtr * a)
+      return false;
+
+   double lsH = v[0] - (v[1] + pendiente * (double)(ix[0] - ix[1]));
+   double rsH = v[4] - (v[1] + pendiente * (double)(ix[4] - ix[1]));
+   if(lsH < P_hchMinHombroFrac * altura || rsH < P_hchMinHombroFrac * altura)
+      return false;
+
+   double prom = (v[2] - MathMax(v[0], v[4])) / altura;
+   if(prom < P_hchMinCabeza)
+      return false;
+
+   double deltaCuello = MathAbs(v[3] - v[1]) / altura;
+   if(deltaCuello >= P_hchTolCuello)
+      return false;
+
+   double difHombros = MathAbs(v[0] - v[4]) / altura;
+   if(difHombros >= P_hchTolHombros)
+      return false;
+
+   // --- puntuacion difusa
+   double sSh    = HchClamp(1.0 - difHombros / P_hchTolHombros);
+   double sTime  = HchClamp((ratio - P_hchMinTiempo) / (0.75 - P_hchMinTiempo));
+   double sNeck  = HchClamp(1.0 - deltaCuello / P_hchTolCuello);
+   double sHead  = HchClamp(prom / 0.30);
+   double sSize  = HchClamp((altura / a) / (2.0 * P_hchMinPatronAtr));
+   double sTrend = HchClamp(HchTendenciaAtr(r, dir, ix[0], piv[k].precio,
+                                            atr, atrDesde, atrHasta) / P_hchTendAtr);
+   double sTmpl  = HchScorePlantilla(r, dir, ix[0], ix[4]);
+
+   double score = 100.0 * (0.20 * sSh + 0.15 * sTime + 0.15 * sNeck + 0.10 * sHead +
+                           0.05 * sSize + 0.10 * sTrend + 0.25 * sTmpl);
+   if(score < P_hchMinScore)
+      return false;
+
+   c.dir = dir;
+   for(int j = 0; j < 5; j++)
+     {
+      c.ix[j] = ix[j];
+      c.px[j] = piv[k + j].precio;
+     }
+   c.score   = score;
+   c.cabezaH = altura;
    return true;
   }
 
-//--------------------------------------------------------------------
-//  Un lado de una vela (espejo del bucle de _escanearCore)
-//--------------------------------------------------------------------
-void Emitir(Evento &eventos[], const int i, const bool venta, const string patron,
-            const double precio, const double invalida, const double nivel,
-            const double E30, const double E50, const double E100, const double cierre)
+// 0 = aun sin ruptura, 1 = cuello roto, 2 = invalidado, 3 = expirado.
+int HchEstado(const HPatron &p, const MqlRates &r[], const int e,
+              const double &atr[], const int atrDesde, const int atrHasta,
+              int &idxRuptura, double &entrada, double &stop)
   {
-   Evento ev;
-   ev.bar       = i;
-   ev.lado      = venta ? "VENTA" : "COMPRA";
-   ev.patron    = patron;
-   ev.precio    = precio;
-   ev.invalida  = invalida;
-   ev.nivel     = nivel;
-   ev.tendencia = Tendencia(cierre, E30, E50, E100);
-   int t = ArraySize(eventos);
-   ArrayResize(eventos, t + 1);
-   eventos[t] = ev;
+   idxRuptura = -1;
+   entrada    = 0.0;
+   stop       = 0.0;
+
+   for(int j = p.ix[4] + 1; j <= e; j++)
+     {
+      double a = HchAtrAt(atr, atrDesde, atrHasta, j);
+
+      // invalidado: el precio supera la cabeza antes de romper el cuello
+      if((p.dir > 0 && r[j].high > p.px[2]) || (p.dir < 0 && r[j].low < p.px[2]))
+         return 2;
+
+      double cuello = HchCuello(p, j);
+      double buf    = P_hchBufRuptura * a;
+      bool   rompe  = (p.dir > 0) ? (r[j].close < cuello - buf)
+                                  : (r[j].close > cuello + buf);
+      if(rompe)
+        {
+         idxRuptura = j;
+         entrada    = r[j].close;
+         double base = P_hchStopCabeza ? p.px[2] : p.px[4];
+         stop        = base + p.dir * P_hchBufStop * a;
+         return 1;
+        }
+
+      if(j - p.ix[4] > P_hchMaxEspera)
+         return 3;
+     }
+   return 0;
   }
 
-void ProcesarBarra(const MqlRates &r[], const int i, const bool venta,
-                   const double &e30[], const double &e50[], const double &e100[],
-                   const double &atr[], Secuencia &s, Evento &eventos[])
+// EMAs solo para la etiqueta de tendencia del mensaje (campo 4).
+string TendenciaEmas(const MqlRates &r[])
   {
-   double c = r[i].close, h = r[i].high, l = r[i].low, o = r[i].open;
-   double atrI = atr[i];
-   double E30 = e30[i], E50 = e50[i], E100 = e100[i];
-   // "con cuerpo" (la definicion de la §9): >= 50 % del rango y >= 0.10 ATR.
-   // La pared de la EMA50 solo descarta el retroceso cuando la vela CIERRA
-   // con cuerpo al otro lado; pincharla con la mecha no descarta nada.
-   double cuerpoBarra = MathAbs(c - o);
-   bool   conCuerpo   = (h - l) > 0 && cuerpoBarra >= P_cuerpoMin * (h - l)
-                        && cuerpoBarra >= P_cuerpoMinAtr * atrI;
-
-   // 4a + 2b. Cerrar CON CUERPO al otro lado de la EMA100 es cambio de
-   // tendencia. La mecha puede pincharla sin castigo; el cierre no. Cuando
-   // cruza, la escalera vuelve a 1 (y pierde la R) y el engano queda anulado
-   // hasta que el precio regrese al lado de la tendencia.
-   if(venta ? (c > E100) : (c < E100))
-     {
-      if(i == g_barraActual && (s.nT > 0 || s.engano))
-         Log("[CAMBIO] " + (venta?"VENTA":"COMPRA") + " " + g_tfTxt
-             + " cerro con cuerpo mas alla de la EMA100: escalera a 1");
-      s.nT = 0;
-      s.ciclo = 0;
-      s.avisados = 0;
-      s.supero   = false;
-      s.pico     = 0;
-      s.emitida  = false;
-      s.retesteo = false;
-      s.toco30 = false;
-      s.confPend = false;
-      s.confCont = 0;
-      s.engano = false;
-      s.enganoBloq = true;
-      s.enganoBar = -1;
-      s.enganoNivel = 0;
-      s.enganoExtremo = 0;
-      return;
-     }
-
-   // 3x. La confirmacion del toque se cuenta en TODAS las velas, tambien en
-   // las que luego salen por una puerta anterior (alineacion, retesteo).
-   // Contarla solo al final dejaba pasar velas en contra sin revisar y el
-   // toque salia con una sola vela a favor.
-   if(s.confPend)
-     {
-      // 1a. cerrar CON CUERPO al otro lado de la EMA50 descarta el retroceso
-      // entero. Con la mecha pinchando la 50 no se descarta nada.
-      if((venta ? (c > E50) : (c < E50)) && conCuerpo)
-        {
-         if(i == g_barraActual)
-            Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
-                + " descartado: el retroceso cerro mas alla de la EMA50");
-         s.confPend = false;
-         s.confCont = 0;
-        }
-      else
-        {
-         s.confExtremo = venta ? MathMax(s.confExtremo, h) : MathMin(s.confExtremo, l);
-         if(venta ? (c < o) : (c > o))
-            s.confCont++;
-         else
-           {
-            if(i == g_barraActual)
-               Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
-                   + " descartado: la vela no continuo la tendencia");
-            s.confPend = false;
-            s.confCont = 0;
-           }
-        }
-
-      if(s.confPend && s.confCont >= P_velasConfirmacion)
-        {
-         bool hayT0 = HayToque(s);
-         Toque t0;
-         ZeroMemory(t0);
-         if(hayT0)
-            t0 = UltimoToque(s);
-         Toque t;
-         t.bar     = i;
-         t.nivel   = E30;
-         t.extremo = s.confExtremo;   // la punta del retroceso, no la vela de vuelta
-         t.alto    = h;
-         t.bajo    = l;
-         // §10: el toque 4 no existe. Si la escalera ya tiene 3, esta
-         // confirmacion no entra, no reemplaza el nivel del 3.º y no toca
-         // la raya de la B.
-         bool aceptado = PushToque(s, t);
-         s.confPend = false;
-         s.confCont = 0;
-         s.toco30   = false;
-         s.supero = false;   // el proximo toque vuelve a exigir extremo nuevo
-         if(aceptado)
-           {
-            // la raya que tiene que romper la B, con la punta de esta vela dentro
-            double picoB = s.pico;
-            if(picoB == 0)
-               picoB = venta ? l : h;
-            s.nivelB = venta ? MathMin(picoB, l) : MathMax(picoB, h);
-            s.bHecho = false;
-            if(i == g_barraActual)
-               g_emb[g_tfIdx].toqW++;
-           }
-
-         // El toque 1 tambien avisa: los tres son la misma jugada y el numero
-         // es el orden del toque en la escalera (1, 2, 3). La R la pone
-         // ConReset cuando la escalera nacio de un engano.
-         if(aceptado && s.nT <= 3 && s.avisados != s.nT)
-           {
-            int cr = CrucesEma30(r, e30, i, P_ventanaCruces);
-            double er = ErDelTramo(r, hayT0 ? t0.bar : -1, i, P_ventanaER);
-            double sep1 = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
-            double sep2 = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
-            string motivo = " ER=" + DoubleToString(er, 2)
-                          + " sep=" + DoubleToString(sep1, 2) + "/" + DoubleToString(sep2, 2);
-            if(cr >= P_minCrucesBloqueo)
-              {
-               if(i == g_barraActual)
-                 {
-                  g_emb[g_tfIdx].blqW++;
-                  Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque" + IntegerToString(s.nT)
-                      + " " + g_tfTxt + " bloqueado: cruces=" + IntegerToString(cr) + motivo);
-                 }
-              }
-            else
-              {
-               if(i == g_barraActual)
-                  g_emb[g_tfIdx].emiW++;
-               Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT), s.ciclo), c,
-                      s.confExtremo, E30, E30, E50, E100, c);
-               s.ultimaEntrada = i;
-               s.avisados = s.nT;   // solo si de verdad se emitio
-               s.emitida  = true;
-              }
-           }
-        }
-     }
-
-   // 1. el precio se salio del techo (EMA50): nace el engano
-   //    Si antes cerro sobre la EMA100 el engaño quedo anulado: no se rearma
-   //    hasta que el precio vuelva del lado de la tendencia.
-   bool salio = venta ? (c > E50) : (c < E50);
-   if(!salio)
-      s.enganoBloq = false;
-   if(salio && !(s.enganoBloq && !s.engano))
-     {
-      if(!s.engano)
-        {
-         s.engano = true;
-         s.enganoNivel = venta ? l : h;
-         s.enganoExtremo = venta ? h : l;
-        }
-      else
-        {
-         s.enganoNivel = venta ? MathMin(s.enganoNivel, l) : MathMax(s.enganoNivel, h);
-         s.enganoExtremo = venta ? MathMax(s.enganoExtremo, h) : MathMin(s.enganoExtremo, l);
-        }
-      s.enganoBar = i;
-      // Salir por encima de la EMA50 NO borra la escalera: la §2 solo
-      // descarta el retroceso y la §5 solo borra la escalera cuando la pila
-      // se invierte. Aqui unicamente se rearma la punta de la pata en curso,
-      // que es contra la que se mide "la tendencia avanzo" (§4).
-      s.pico     = 0;
-      s.retesteo = false;
-     }
-
-   // 1c. retesteo pendiente de la 2B: se espera la vuelta al nivel roto
-   if(s.retesteo)
-     {
-      bool prueba    = venta ? (h >= s.retNivel - P_tolRetesteoAtr * atrI)
-                             : (l <= s.retNivel + P_tolRetesteoAtr * atrI);
-      bool sigueRoto = venta ? (c < s.retNivel) : (c > s.retNivel);
-      if(prueba && sigueRoto)
-        {
-         // §10: la pila solo exige ORDEN; no se exige separacion entre EMAs.
-         bool alineadaAhora = venta ? (c < E30 && E30 <= E50 && E50 <= E100)
-                                    : (c > E30 && E30 >= E50 && E50 >= E100);
-         if(!alineadaAhora)
-           {
-            s.retesteo = false;
-            return;
-           }
-         Emitir(eventos, i, venta, ConReset("2B", s.ciclo), c, s.retExtremo, s.retNivel,
-                E30, E50, E100, c);
-         s.ultimaEntrada = i;
-         s.nT = 0;
-         s.avisados = 0;
-         s.emitida  = false;
-         s.retesteo = false;
-         s.pico     = 0;
-         s.engano = false;
-         s.enganoBar = -1;
-         s.enganoNivel = 0;
-         s.enganoExtremo = 0;
-         return;
-        }
-      if(!sigueRoto || i - s.retBar > P_caducidadRetesteo)
-         s.retesteo = false;
-      else
-         return;   // esperando la vuelta al nivel: la secuencia no se toca
-     }
-
-   // 2. la pila EMA tiene que estar en ORDEN en el sentido de la jugada.
-   //    Sin cierre ni separaciones minimas: el cierre lo exige la vuelta del
-   //    toque (mas abajo) y exigir separacion dejaba la senal muda justo
-   //    despues de un retroceso a la EMA30, que pega la EMA30 a la EMA50.
-   bool alineada = venta ? (E30 <= E50 && E50 <= E100)
-                         : (E30 >= E50 && E50 >= E100);
-   if(!alineada)
-     {
-      if(i == g_barraActual)
-         g_emb[g_tfIdx].noAlinW++;
-      bool invertida = venta ? (E30 > E50) : (E30 < E50);
-      if(invertida)
-        {
-         // Cambio de estructura: la escalera se reinicia y vuelve a 1, 2, 3
-         // SIN R. La R solo la pone la seductora dentro de la escalera.
-         s.nT = 0;
-         s.ciclo = 0;
-         s.avisados = 0;
-         s.supero   = false;
-         s.pico     = 0;
-         s.emitida  = false;
-         s.retesteo = false;
-         s.toco30 = false;
-         s.engano = false;
-         s.enganoBar = -1;
-         s.enganoNivel = 0;
-         s.enganoExtremo = 0;
-        }
-      return;
-     }
-
-   // 3. toque a la EMA30 y vuelta del retroceso.
-   //    1a. Regla del propietario: el retroceso toca la EMA30 y la MECHA
-   //    puede pinchar la EMA50 todo lo que quiera, pero el CIERRE no puede
-   //    quedar al otro lado. Si cierra alla, ese retroceso ya no es un toque:
-   //    se descarta y se empieza de nuevo.
-   //    4a. Con la EMA100 solo manda el cuerpo, y ahi cerrar es cambio de
-   //    tendencia (se trata arriba, antes de llegar aqui).
-   double tol30 = P_tolToqueAtr * atrI;
-   bool llego30      = venta ? (h >= E30 - tol30) : (l <= E30 + tol30);
-   bool cerroSobre50 = venta ? (c > E50) : (c < E50);
-   if(i == g_barraActual && llego30)
-      g_emb[g_tfIdx].tocaW++;
-
-   if(cerroSobre50 && conCuerpo && (s.toco30 || s.confPend))
-     {
-      if(i == g_barraActual)
-         Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
-             + " descartado: el retroceso cerro mas alla de la EMA50");
-      s.toco30   = false;
-      s.confPend = false;
-      s.confCont = 0;
-     }
-
-   if(!s.toco30 && !s.confPend && !cerroSobre50 && llego30)
-     {
-      s.toco30 = true;
-      s.toco30Extremo = venta ? h : l;
-     }
-   if(s.toco30)
-      s.toco30Extremo = venta ? MathMax(s.toco30Extremo, h) : MathMin(s.toco30Extremo, l);
-
-   bool hayUltimo = HayToque(s);
-   Toque ultimo;
-   ZeroMemory(ultimo);
-   if(hayUltimo)
-      ultimo = UltimoToque(s);
-
-   // Extremo de la pata en curso: la punta del impulso, no la vela del
-   // retroceso. Del toque 2 en adelante el precio TIENE que romperlo: si la
-   // tendencia no avanzo, el toque no cuenta y no se repite la senal.
-   if(s.pico == 0)
-      s.pico = venta ? l : h;
-   if(hayUltimo && (venta ? (l < s.pico) : (h > s.pico)))
-      s.supero = true;
-   s.pico = venta ? MathMin(s.pico, l) : MathMax(s.pico, h);
-
-   bool separado = !hayUltimo || (i - ultimo.bar) >= P_separacionToques;
-   // el toque 1 no exige nada; el 2 y el 3 solo valen con extremo roto
-   bool supera = !hayUltimo || s.supero;
-
-   // 1a: si el cierre no puede pasar de la EMA50, la vuelta es siempre por la
-   // EMA30 (toque somero): no hay vuelta por la 50 ni cuerpo que exigir.
-   double nivelVol = E30;
-   bool deVuelta   = venta ? (c < nivelVol) : (c > nivelVol);
-
-   // 3x. La vela de vuelta NO avisa: arranca la cuenta de velas de
-   // continuacion. La cuenta y el aviso los lleva el bloque del principio de
-   // la barra, para que ninguna puerta posterior se salte velas.
-   if(s.toco30 && deVuelta && separado && supera)
-     {
-      s.confPend    = true;
-      s.confCont    = 0;
-      s.confExtremo = s.toco30Extremo;
-      s.toco30      = false;
-      if(i == g_barraActual)
-         Log("[CONF] " + (venta?"VENTA":"COMPRA") + " toque " + g_tfTxt
-             + " vuelta vista: esperando " + IntegerToString(P_velasConfirmacion)
-             + " velas de continuacion");
-     }
-
-   // 3b. La B de cada toque: cierre CON CUERPO que rompe el extremo del
-   //     impulso anterior y continua. Es una entrada adicional a la del
-   //     toque, no la sustituye: despues del 1 va el 1B, del 2 el 2B, etc.
-   if(P_bPorRuptura && s.nT > 0 && !s.bHecho)
-     {
-      double cuerpoB  = MathAbs(c - o);
-      bool   cuerpoBok = (h - l) > 0 && cuerpoB >= P_cuerpoMin * (h - l)
-                         && cuerpoB >= P_cuerpoMinAtr * atrI;
-      bool   rompeB    = venta ? (c < s.nivelB) : (c > s.nivelB);
-      if(rompeB && cuerpoBok)
-        {
-         double stopB = hayUltimo ? ultimo.extremo : s.confExtremo;
-         if(i == g_barraActual)
-            g_emb[g_tfIdx].emiW++;
-         Emitir(eventos, i, venta, ConReset(IntegerToString(s.nT) + "B", s.ciclo),
-                c, stopB, s.nivelB, E30, E50, E100, c);
-         s.ultimaEntrada = i;
-         s.bHecho = true;
-        }
-     }
-
-   // 4. quiebre: cierre mas alla del nivel, dentro de la caducidad del toque
-   bool enganoVivo = s.engano && (i - s.enganoBar) <= P_caducidadEngano;
-   if(!HayToque(s) && !enganoVivo)
-      return;
-   // La caducidad del quiebre solo vale para la rama vieja de la 2B/3B: la
-   // seductora (§6) no depende de la escalera de toques y no puede quedar
-   // muda por un toque viejo.
-   Toque t4;
-   ZeroMemory(t4);
-   bool toqueViejo = false;
-   if(HayToque(s))
-     {
-      t4 = UltimoToque(s);
-      toqueViejo = (i <= t4.bar || (i - t4.bar) > P_caducidad);
-     }
-
-   // Con P_bPorRuptura la B de cada toque la emite el bloque 3b (ruptura con
-   // cuerpo) y esta rama vieja de quiebre no tiene que volver a emitirla:
-   // era la que borraba la escalera entera en la vela siguiente al toque y
-   // dejaba el 2 y el 3 sin poder existir (§1, §4).
-   string base = "";
-   if(!P_bPorRuptura && HayToque(s) && !toqueViejo && s.nT >= 3)
-      base = "3B";
-   else if(!P_bPorRuptura && HayToque(s) && !toqueViejo && s.nT == 2)
-      base = "2B";
-   else if(enganoVivo)
-      base = "1S";   // la seductora: el "1" quedo para el primer toque
-   else
-      return;                       // sin toque y sin engano: no hay codigo
-
-   // una sola entrada por secuencia: si la 2/3 ya se emitio, su 2B/3B no sale
-   if(P_unaPorSecuencia && s.emitida && base != "1S")
-     {
-      // se cierra la escalera sin marcar reset: un cierre no es un engano
-      s.nT = 0;
-      s.avisados = 0;
-      s.emitida = false;
-      s.pico    = 0;
-      s.engano = false;
-      s.enganoBar = -1;
-      s.enganoNivel = 0;
-      s.enganoExtremo = 0;
-      return;
-     }
-
-   // base "1" = vuelta del engano. Con P_enganoEnEma50 el disparo es la vela
-   // que CIERRA de vuelta a traves de la EMA50 en la direccion de la tendencia;
-   // si no, el minimo del tramo (el "cuello"), que llega mas tarde y peor.
-   double nivelQ = (base == "1S") ? (P_enganoEnEma50 ? E50 : s.enganoNivel) : t4.nivel;
-   if(!(nivelQ > 0))
-      return;
-   bool rompe = venta ? (c < nivelQ) : (c > nivelQ);
-   if(!rompe)
-      return;
-
-   // "con cuerpo": la vela que quiebra tiene que ser una vela de verdad
-   double cuerpo = MathAbs(c - o);
-   double rango  = h - l;
-   if(!(rango > 0) || (cuerpo / rango) < P_cuerpoMin || cuerpo < P_cuerpoMinAtr * atrI)
-      return;
-   if(cuerpo > 3.0 * atrI)
-      return;   // vela gigante: esperar micro-retroceso
-
-   // Filtros anti-ruido en el quiebre
-   int crQ = CrucesEma30(r, e30, i, P_ventanaCruces);
-   double erQ = ErDelTramo(r, HayToque(s) ? t4.bar : -1, i, P_ventanaER);
-   double sep1Q = venta ? (E50 - E30) / atrI : (E30 - E50) / atrI;
-   double sep2Q = venta ? (E100 - E50) / atrI : (E50 - E100) / atrI;
-   bool bloqueadoQ = false;
-   string motivoQ = "";
-   if(crQ >= P_minCrucesBloqueo) { bloqueadoQ = true; motivoQ = motivoQ + " cruces=" + IntegerToString(crQ); }
-   if(erQ < P_erMinQuiebre)      { bloqueadoQ = true; motivoQ = motivoQ + " ER=" + DoubleToString(erQ, 2); }
-   // la separacion ya vive dentro de "alineada": aqui solo se mide
-   motivoQ = motivoQ + " sep=" + DoubleToString(sep1Q, 2) + "/" + DoubleToString(sep2Q, 2);
-   if(bloqueadoQ)
-     {
-      if(i == g_barraActual)
-         Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " quiebre " + base
-             + " " + g_tfTxt + " bloqueado:" + motivoQ);
-      return;
-     }
-
-   // la 2B no se opera al cierre: se espera el retesteo del nivel. Solo en la
-   // rama vieja: con P_bPorRuptura la B ya se avisa en la ruptura con cuerpo.
-   if(base == "2B")
-     {
-      s.retesteo = true;
-      s.retBar = i;
-      s.retNivel = nivelQ;
-      s.retExtremo = t4.extremo;
-      return;
-     }
-
-   // el stop de la vuelta del engano es la PUNTA del tramo; el extremo del
-   // toque vale 0 cuando nT==0 y dejaba la invalidacion en el precio 0.
-   double invalidaQ = (base == "1S") ? s.enganoExtremo : t4.extremo;
-   if(!(invalidaQ > 0))
-      return;
-
-   Emitir(eventos, i, venta, ConReset(base, s.ciclo), c, invalidaQ, nivelQ, E30, E50, E100, c);
-   s.ultimaEntrada = i;
-   // La R significa UNA cosa: la escalera nacio de un engano (reset). Solo la
-   // seductora marca el reset; un 2B/3B o un toque no son un reset.
-   if(base == "1S")
-      s.ciclo++;
-   s.pico = 0;
-   s.supero = false;
-   s.nT = 0;
-   s.avisados = 0;
-   s.emitida  = false;
-   s.engano = false;
-   s.enganoBar = -1;
-   s.enganoNivel = 0;
-   s.enganoExtremo = 0;
+   int n = ArraySize(r);
+   double cierres[], e30[], e50[], e100[];
+   ArrayResize(cierres, n);
+   for(int i = 0; i < n; i++)
+      cierres[i] = r[i].close;
+   CalcEma(cierres, P_emaContacto, e30);
+   CalcEma(cierres, P_emaTecho, e50);
+   CalcEma(cierres, P_emaFondo, e100);
+   return Tendencia(r[n-1].close, e30[n-1], e50[n-1], e100[n-1]);
   }
 
 //--------------------------------------------------------------------
-//  Escaneo completo de una serie (puro, como escanear() en nucleo.js)
+//  Escaneo de la serie: solo la vela recien cerrada puede emitir.
 //--------------------------------------------------------------------
 void Escanear(const MqlRates &r[], Evento &eventos[])
   {
    ArrayResize(eventos, 0);
    int n = ArraySize(r);
-   if(n < P_emaFondo + 5)
+   if(n < P_hchAtrPeriodo * 5 + 60)
       return;
    g_barraActual = n - 1;   // solo la vela recien cerrada escribe log
 
-   double cierres[];
-   ArrayResize(cierres, n);
-   for(int i=0; i<n; i++)
-      cierres[i] = r[i].close;
+   int e     = n - 1;
+   int s     = MathMax(0, e - P_hchLookback + 1);
+   int desde = MathMax(0, s - 5 * P_hchAtrPeriodo);
 
-   double e30[], e50[], e100[], atr[];
-   CalcEma(cierres, P_emaContacto, e30);
-   CalcEma(cierres, P_emaTecho, e50);
-   CalcEma(cierres, P_emaFondo, e100);
-   CalcAtr(r, P_atrPeriodo, atr);
+   double atr[];
+   HchAtr(r, desde, e, atr);
 
-   Secuencia venta, compra;
-   NuevaSecuencia(venta);
-   NuevaSecuencia(compra);
+   HPivote piv[];
+   int nPiv = 0;
+   HchPivotes(r, s, e, atr, desde, e, piv, nPiv);
 
-   for(int i = P_emaFondo; i < n; i++)
+   string tend = TendenciaEmas(r);
+
+   Evento mejor[2];          // 0 = VENTA (HCH), 1 = COMPRA (HCH invertido)
+   double scoreMax[2];
+   scoreMax[0] = -1.0;
+   scoreMax[1] = -1.0;
+
+   for(int k = 0; k + 4 < nPiv; k++)
      {
-      if(!(atr[i] > 0) || !(e30[i] > 0) || !(e50[i] > 0) || !(e100[i] > 0))
+      int dir = piv[k].tipo;
+      g_emb[g_tfIdx].patrones++;
+
+      HPatron p;
+      if(!HchEvaluar(r, piv, k, dir, atr, desde, e, p))
          continue;
-      ProcesarBarra(r, i, true,  e30, e50, e100, atr, venta,  eventos);
-      ProcesarBarra(r, i, false, e30, e50, e100, atr, compra, eventos);
+      g_emb[g_tfIdx].completos++;
+
+      int    idxR    = -1;
+      double entrada = 0.0, stop = 0.0;
+      int    st = HchEstado(p, r, e, atr, desde, e, idxR, entrada, stop);
+      if(st == 2) { g_emb[g_tfIdx].invalidados++; continue; }
+      if(st == 3) { g_emb[g_tfIdx].expirados++;   continue; }
+      if(st == 0)
+         continue;
+      if(idxR != e)
+        {
+         g_emb[g_tfIdx].rotos++;   // rompio en una vela anterior: ya paso
+         continue;
+        }
+
+      int lado = (dir > 0) ? 0 : 1;
+      if(p.score <= scoreMax[lado])
+         continue;
+      scoreMax[lado] = p.score;
+
+      Evento ev;
+      ev.bar       = e;
+      ev.lado      = (lado == 0) ? "VENTA" : "COMPRA";
+      ev.patron    = (dir > 0) ? "HCH" : "HCHi";
+      ev.precio    = entrada;
+      ev.invalida  = stop;
+      ev.nivel     = HchCuello(p, e);
+      ev.tendencia = tend;
+      ev.score     = p.score;
+      ev.prio      = 1;
+      mejor[lado]  = ev;
+     }
+
+   for(int lado = 0; lado < 2; lado++)
+     {
+      if(scoreMax[lado] < 0.0)
+         continue;
+      int k = ArraySize(eventos);
+      ArrayResize(eventos, k + 1);
+      eventos[k] = mejor[lado];
+      g_emb[g_tfIdx].emitidos++;
+     }
+  }
+
+//--------------------------------------------------------------------
+//  Estrategia BARRIDO DE LIQUIDEZ
+//  Port del indicador BarridoLiquidez.mq5: swing confirmado, mecha que
+//  perfora el nivel y vuelve a cerrar dentro, y rebote confirmado.
+//  La senal es el REBOTE (no el barrido): entrada al cierre de la vela
+//  que se aleja 1,5 ATR de la punta de la mecha.
+//  Se recalcula sobre la ventana reciente: un barrido que pudiera
+//  confirmar en esta vela nacio como mucho MaxBarrido+Rebote velas atras.
+//--------------------------------------------------------------------
+void LiqAtr(const MqlRates &r[], const int desde, const int hasta, double &atr[])
+  {
+   ArrayResize(atr, hasta + 1);
+   ArrayInitialize(atr, 0.0);
+   double a = 0.0;
+   for(int k = desde; k <= hasta; k++)
+     {
+      double tr = r[k].high - r[k].low;
+      if(k > 0)
+         tr = MathMax(tr, MathMax(MathAbs(r[k].high - r[k-1].close),
+                                  MathAbs(r[k].low  - r[k-1].close)));
+      int nn = k - desde;
+      if(nn <= 0)
+         a = tr;
+      else
+        {
+         if(P_liqAtrTope > 0.0)
+            tr = MathMin(tr, P_liqAtrTope * a);
+         if(nn < P_liqAtrPeriodo)
+            a = (a * nn + tr) / (nn + 1);
+         else
+            a = (a * (P_liqAtrPeriodo - 1) + tr) / P_liqAtrPeriodo;
+        }
+      atr[k] = a;
+     }
+  }
+
+// Swing confirmado en i (necesita P_liqSwing velas a cada lado).
+bool LiqSwing(const MqlRates &r[], const int i, const int dir)
+  {
+   double v = (dir > 0) ? r[i].low : -r[i].high;
+   for(int k = 1; k <= P_liqSwing; k++)
+     {
+      double izq = (dir > 0) ? r[i-k].low : -r[i-k].high;
+      double der = (dir > 0) ? r[i+k].low : -r[i+k].high;
+      if(izq <= v)
+         return false;
+      if(der <  v)
+         return false;
+     }
+   return true;
+  }
+
+// La vela del extremo debe mostrar rechazo: color contrario y mecha larga.
+bool LiqMechaOk(const MqlRates &r[], const double &atr[], const int x, const int d,
+                const double nivel, const double extremo)
+  {
+   double rng = r[x].high - r[x].low;
+   if(rng <= 0.0)
+      return false;
+   if(P_liqColorContra && d * (r[x].close - r[x].open) <= 0.0)
+      return false;
+   double a = MathMax(atr[x], _Point);
+   if(d * (nivel - extremo) < P_liqMinPerfora * a)
+      return false;
+   double mecha = (d > 0) ? (MathMin(r[x].open, r[x].close) - r[x].low)
+                          : (r[x].high - MathMax(r[x].open, r[x].close));
+   if(mecha < P_liqMechaAtr * a)
+      return false;
+   if(mecha / rng < P_liqMechaMin)
+      return false;
+   return true;
+  }
+
+// Devuelve la vela en la que el rebote queda confirmado, o -1.
+int LiqConfirmacion(const MqlRates &r[], const double &atr[], const int e,
+                    const int nivelIdx, const int d, const double nivel,
+                    double &extremo, int &extremoIdx)
+  {
+   int desde = MathMax(nivelIdx + 1, e - (P_liqMaxBarrido + P_liqReboteVelas + 1));
+   int primero = -1;
+   for(int j = desde; j <= e; j++)
+     {
+      if((d > 0 && r[j].low < nivel) || (d < 0 && r[j].high > nivel))
+        {
+         primero = j;
+         break;
+        }
+     }
+   if(primero < 0)
+      return -1;
+
+   extremo    = (d > 0) ? r[primero].low : r[primero].high;
+   extremoIdx = primero;
+   int fin = MathMin(primero + P_liqMaxBarrido - 1, e);
+   int reclaim = -1;
+   for(int j = primero; j <= fin; j++)
+     {
+      if(d > 0) { if(r[j].low  < extremo) { extremo = r[j].low;  extremoIdx = j; } }
+      else      { if(r[j].high > extremo) { extremo = r[j].high; extremoIdx = j; } }
+      double a = MathMax(atr[j], _Point);
+      if(d * (nivel - extremo) > P_liqMaxPerfora * a)
+         return -1;                        // ruptura, no barrido
+      if(d * (r[j].close - nivel) > 0.0)  // cierre de vuelta dentro del nivel
+        {
+         reclaim = j;
+         break;
+        }
+     }
+   if(reclaim < 0)
+      return -1;
+   if(!LiqMechaOk(r, atr, extremoIdx, d, nivel, extremo))
+      return -1;
+
+   for(int j = reclaim + 1; j <= e; j++)
+     {
+      double a = MathMax(atr[j], _Point);
+      double avance = d * (r[j].close - extremo);
+      if(avance < -P_liqBufRuptura * a)
+         return -1;                        // zona rota
+      if(avance >= P_liqReboteAtr * a)
+         return j;                         // rebote confirmado
+      if(j - reclaim >= P_liqReboteVelas)
+         return -1;                        // expirada
+     }
+   return -1;
+  }
+
+void EscanearLiquidez(const MqlRates &r[], Evento &eventos[])
+  {
+   ArrayResize(eventos, 0);
+   int n = ArraySize(r);
+   if(n < P_liqAtrPeriodo * 5 + 2 * P_liqSwing + 60)
+      return;
+   int e = n - 1;
+
+   int desdeAtr = MathMax(0, e - (P_liqMaxEdadNivel + 2 * P_liqSwing + 5 * P_liqAtrPeriodo));
+   double atr[];
+   LiqAtr(r, desdeAtr, e, atr);
+
+   // Un nivel barrido en la ventana de rebote puede tener hasta MaxEdadNivel
+   // velas de antiguedad en el momento del barrido.
+   int desde = MathMax(P_liqSwing, e - P_liqMaxEdadNivel - P_liqMaxBarrido - P_liqReboteVelas - 2);
+   string tend = TendenciaEmas(r);
+
+   Evento mejor[2];
+   int    mejorExt[2];
+   mejorExt[0] = -1;
+   mejorExt[1] = -1;
+
+   for(int i = desde; i + P_liqSwing <= e; i++)
+     {
+      for(int s = 0; s < 2; s++)
+        {
+         int d = (s == 0) ? +1 : -1;
+         if(d > 0 && !P_liqAlcista)
+            continue;
+         if(d < 0 && !P_liqBajista)
+            continue;
+         if(!LiqSwing(r, i, d))
+            continue;
+         g_emb[g_tfIdx].liqNiveles++;
+
+         double nivel = (d > 0) ? r[i].low : r[i].high;
+         double ext   = 0.0;
+         int    extIdx = -1;
+         int    conf = LiqConfirmacion(r, atr, e, i, d, nivel, ext, extIdx);
+         if(conf != e)
+            continue;
+
+         int lado = (d > 0) ? 1 : 0;          // barrido de minimos -> COMPRA
+         if(extIdx <= mejorExt[lado])
+            continue;
+         mejorExt[lado] = extIdx;
+
+         Evento ev;
+         ev.bar       = e;
+         ev.lado      = (lado == 0) ? "VENTA" : "COMPRA";
+         ev.patron    = "LIQ";
+         ev.precio    = r[e].close;
+         ev.invalida  = ext - d * P_liqBufRuptura * MathMax(atr[e], _Point);
+         ev.nivel     = nivel;
+         ev.score     = d * (r[e].close - ext) / MathMax(atr[e], _Point);
+         ev.prio      = 2;
+         ev.tendencia = tend;
+         mejor[lado]  = ev;
+        }
+     }
+
+   for(int lado = 0; lado < 2; lado++)
+     {
+      if(mejorExt[lado] < 0)
+         continue;
+      int k = ArraySize(eventos);
+      ArrayResize(eventos, k + 1);
+      eventos[k] = mejor[lado];
+      g_emb[g_tfIdx].liqEmite++;
      }
   }
 
@@ -1163,12 +1137,15 @@ string MensajeSenal(const string simbolo, const string tf, const Evento &ev,
   {
    bool compra = (ev.lado == "COMPRA");
    string patron = ev.patron;
-   if(StringFind(patron, "R") >= 0)
-      patron = patron + " (reset)";
    string texto = "";
    texto += Icono(compra) + " <b>" + ev.lado + "</b>\n";
    texto += "<b>1. Activo:</b> " + simbolo + "\n";
-   texto += "<b>2. Temporalidad:</b> " + tf + "\n";    string estrategia = (StringFind(ev.patron, "E") >= 0) ? "Estructura" : "Wonderizada";
+   texto += "<b>2. Temporalidad:</b> " + tf + "\n";
+   string estrategia = "Hombro-Cabeza-Hombro";
+   if(ev.patron == "HCHi")
+      estrategia = "Hombro-Cabeza-Hombro invertido";
+   else if(ev.patron == "LIQ")
+      estrategia = "Barrido de liquidez";
    texto += "<b>3. Estrategia:</b> " + patron + " - " + estrategia + "\n";
    texto += "<b>4. Tendencia:</b> " + TendenciaTxt(ev.tendencia) + extraTend + "\n";
    texto += "<b>5. Precio entrada:</b> " + FmtPrecio(ev.precio) + " (vela cerrada)\n";
@@ -1246,8 +1223,8 @@ void CargarEnviadas()
 struct EstadoSim
   {
    string   nombre;
-   datetime ultimaBarra[4];   // por cada TF (M3,M5,M15,M30)
-   int      senales[4];       // por cada TF
+   datetime ultimaBarra[8];   // por cada TF (M1,M3,M5,M15,H1...)
+   int      senales[8];       // por cada TF
    bool     avisado;
   };
 
@@ -1289,45 +1266,38 @@ void Revisar(const int idx)
          g_est[idx].ultimaBarra[tfi] = formando;
       datetime ultima = r[n-1].time;
 
-      Evento evs[], evsE[];
-      Escanear(r, evs);
-      EscanearEstructura(r, evsE);
-
-      // candidatos de la vela recien cerrada, de las dos estrategias
-      Evento cand[];
-      ArrayResize(cand, 0);
-      int t1 = ArraySize(evs);
-      for(int i=0; i<t1; i++)
-         if(evs[i].bar == n - 1)
-           {
-            int k = ArraySize(cand);
-            ArrayResize(cand, k + 1);
-            cand[k] = evs[i];
-           }
-      int t2 = ArraySize(evsE);
-      for(int i=0; i<t2; i++)
-         if(evsE[i].bar == n - 1)
-           {
-            int k = ArraySize(cand);
-            ArrayResize(cand, k + 1);
-            cand[k] = evsE[i];
-           }
+      // HCH y barrido de liquidez: cada uno devuelve solo la vela cerrada.
+      Evento evsH[], evsL[], cand[];
+      Escanear(r, evsH);
+      EscanearLiquidez(r, evsL);
+      int nh = ArraySize(evsH), nl = ArraySize(evsL);
+      ArrayResize(cand, nh + nl);
+      for(int i = 0; i < nh; i++)
+         cand[i] = evsH[i];
+      for(int i = 0; i < nl; i++)
+         cand[nh + i] = evsL[i];
 
       long offServidor = (long)TimeTradeServer() - (long)TimeGMT();
       datetime tCierre  = (datetime)((long)ultima + (long)PeriodSeconds(g_tf));
       datetime tCierreUTC = (datetime)((long)tCierre - offServidor);
 
-      // una sola senal por vela y lado: gana la de mayor prioridad
-      for(int lado = 0; lado < 2; lado++)
+      // HCH y LIQ son estrategias independientes: cada una manda su propia
+      // senal por vela y lado. Dentro de la misma estrategia gana el mayor
+      // score (HCH compite HCH/HCHi, LIQ compite consigo misma).
+      for(int fam = 0; fam < 2; fam++)
+       for(int lado = 0; lado < 2; lado++)
         {
          string cual = (lado == 0) ? "VENTA" : "COMPRA";
+         bool   esHch = (fam == 0);
          int mejor = -1;
          int nc = ArraySize(cand);
          for(int i = 0; i < nc; i++)
            {
             if(cand[i].lado != cual)
                continue;
-            if(mejor < 0 || Prioridad(cand[i].patron) > Prioridad(cand[mejor].patron))
+            if((StringFind(cand[i].patron, "HCH") == 0) != esHch)
+               continue;
+            if(mejor < 0 || cand[i].score > cand[mejor].score)
                mejor = i;
            }
          if(mejor < 0)
@@ -1341,9 +1311,8 @@ void Revisar(const int idx)
 
          TendMayor tm = TendenciaMayor(g_est[idx].nombre, tCierre);
          string extra = SufijoTendencia(tm, g_tfTxt);
-         // El H1 NO es un filtro del documento (§7 solo fija ER y cruces):
-         // el estado de H1 se escribe en la senal y en el log, pero no veta
-         // ninguna temporalidad.
+         // El H1 NO es un filtro de la estrategia: el estado de H1 se escribe
+         // en la senal y en el log, pero no veta ninguna temporalidad.
          if(tm.ok && tm.tendencia != "RANGO")
            {
             bool contra = (ev.lado == "VENTA"  && tm.tendencia == "ALCISTA")
@@ -1413,15 +1382,6 @@ void BtCerrar()
         }
   }
 
-// aviso vs entrada: solo 2E/3E (y sus reseteadas) son avisos de Estructura,
-// tal y como los llama la §8. Los toques 2 y 3 son entradas de la escalera
-// (§4) y en vivo se mandan igual que el 1: con entrada, stop y nivel.
-bool BtEsEntrada(const string p)
-  {
-   if(p == "2E" || p == "3E" || p == "2RE" || p == "3RE") return false;
-   return true;
-  }
-
 void BtSenal(const string tf, const Evento &ev, const datetime tBarra,
              const double atr, const string h1)
   {
@@ -1435,7 +1395,7 @@ void BtSenal(const string tf, const Evento &ev, const datetime tBarra,
              DoubleToString(ev.precio, _Digits) + ";" +
              DoubleToString(ev.invalida, _Digits) + ";" +
              DoubleToString(atr, _Digits) + ";" +
-             (BtEsEntrada(ev.patron) ? "ENTRADA" : "AVISO") + ";" + h1);
+             "ENTRADA;" + h1);
   }
 
 // Un paso del tester: por cada TF mira si cerro una vela nueva, guarda la
@@ -1465,28 +1425,15 @@ void BtPaso()
                    DoubleToString(r[n-1].low,   _Digits) + ";" +
                    DoubleToString(r[n-1].close, _Digits));
 
-      Evento evs[], evsE[];
-      Escanear(r, evs);
-      EscanearEstructura(r, evsE);
-
-      Evento cand[];
-      ArrayResize(cand, 0);
-      int t1 = ArraySize(evs);
-      for(int i = 0; i < t1; i++)
-         if(evs[i].bar == n - 1)
-           {
-            int k = ArraySize(cand);
-            ArrayResize(cand, k + 1);
-            cand[k] = evs[i];
-           }
-      int t2 = ArraySize(evsE);
-      for(int i = 0; i < t2; i++)
-         if(evsE[i].bar == n - 1)
-           {
-            int k = ArraySize(cand);
-            ArrayResize(cand, k + 1);
-            cand[k] = evsE[i];
-           }
+      Evento evsH[], evsL[], cand[];
+      Escanear(r, evsH);
+      EscanearLiquidez(r, evsL);
+      int nh = ArraySize(evsH), nl = ArraySize(evsL);
+      ArrayResize(cand, nh + nl);
+      for(int i = 0; i < nh; i++)
+         cand[i] = evsH[i];
+      for(int i = 0; i < nl; i++)
+         cand[nh + i] = evsL[i];
       if(ArraySize(cand) == 0)
          continue;
 
@@ -1498,17 +1445,21 @@ void BtPaso()
       TendMayor tm = TendenciaMayor(_Symbol, tCierre);
       string h1 = SufijoTendencia(tm, g_tfTxt);
 
-      // una sola senal por vela y lado: gana la de mayor prioridad
-      for(int lado = 0; lado < 2; lado++)
+      // HCH y LIQ son independientes: una senal de cada una por vela y lado
+      for(int fam = 0; fam < 2; fam++)
+       for(int lado = 0; lado < 2; lado++)
         {
          string cual = (lado == 0) ? "VENTA" : "COMPRA";
+         bool   esHch = (fam == 0);
          int mejor = -1;
          int nc = ArraySize(cand);
          for(int i = 0; i < nc; i++)
            {
             if(cand[i].lado != cual)
                continue;
-            if(mejor < 0 || Prioridad(cand[i].patron) > Prioridad(cand[mejor].patron))
+            if((StringFind(cand[i].patron, "HCH") == 0) != esHch)
+               continue;
+            if(mejor < 0 || cand[i].score > cand[mejor].score)
                mejor = i;
            }
          if(mejor < 0)
@@ -1529,15 +1480,38 @@ int OnInit()
    CargarCfg("adv.cfg");
    CargarEnviadas();
 
-   // Multi-TF: inicializar arrays de temporalidades
-   ArrayResize(g_tfTxtArr, g_nTf);
-   ArrayResize(g_tfArr, g_nTf);
-   g_tfTxtArr[0] = "M3";  g_tfArr[0] = PERIOD_M3;
-   g_tfTxtArr[1] = "M5";  g_tfArr[1] = PERIOD_M5;
-   g_tfTxtArr[2] = "M15"; g_tfArr[2] = PERIOD_M15;
-   g_tfTxtArr[3] = "M30"; g_tfArr[3] = PERIOD_M30;
-   g_tfTxt = g_tfTxtArr[1];   // default para logs
-   g_tf    = g_tfArr[1];
+   // Multi-TF: la lista sale de adv.cfg (tfs=M1,M3,M5,M15,H1).
+   // Si viene vacia o con mas de 8 entradas se usa la lista por defecto.
+   string parTf[];
+   int    npTf = StringSplit(g_tfs, StringGetCharacter(",", 0), parTf);
+   int    nVal = 0;
+   ArrayResize(g_tfTxtArr, 8);
+   ArrayResize(g_tfArr, 8);
+   for(int i = 0; i < npTf && nVal < 8; i++)
+     {
+      string u = parTf[i];
+      StringTrimLeft(u);
+      StringTrimRight(u);
+      if(StringLen(u) == 0)
+         continue;
+      g_tfTxtArr[nVal] = u;
+      g_tfArr[nVal]   = PeriodoTxt(u);
+      nVal++;
+     }
+   if(nVal == 0)
+     {
+      g_tfTxtArr[0] = "M5";  g_tfArr[0] = PERIOD_M5;
+      nVal = 1;
+     }
+   ArrayResize(g_tfTxtArr, nVal);
+   ArrayResize(g_tfArr, nVal);
+   g_nTf   = nVal;
+   g_iRef  = 0;
+   for(int i = 0; i < g_nTf; i++)
+      if(g_tfTxtArr[i] == "M5")
+         g_iRef = i;
+   g_tfTxt = g_tfTxtArr[g_iRef];   // default para logs
+   g_tf    = g_tfArr[g_iRef];
 
    // Modo backtest: no hay cuenta, ni Telegram, ni timer. El tester empuja
    // vela a vela por OnTick y todo sale a CSV.
@@ -1604,7 +1578,7 @@ int OnInit()
       if(StringLen(g_est[i].nombre) == 0)
          continue;
       MqlRates r[];
-      int m = CopyRates(g_est[i].nombre, g_tfArr[1], 0, 2, r);
+      int m = CopyRates(g_est[i].nombre, g_tfArr[g_iRef], 0, 2, r);
       string precio = (m > 0) ? FmtPrecio(r[m-1].close) : "sin datos";
       snap = snap + "\n  " + g_est[i].nombre + " = " + precio;
      }
@@ -1670,7 +1644,7 @@ void PanelEstado()
 
       double precio = 0.0, spread = 0.0;
       MqlRates rp[];
-      int mp = CopyRates(g_est[i].nombre, g_tfArr[1], 0, 1, rp);
+      int mp = CopyRates(g_est[i].nombre, g_tfArr[g_iRef], 0, 1, rp);
       if(mp > 0)
         {
          precio = rp[0].close;
@@ -1810,7 +1784,7 @@ void OnTimer()
       if(StringLen(g_est[i].nombre) == 0)
          continue;
       MqlRates r[];
-      int m = CopyRates(g_est[i].nombre, g_tfArr[1], 0, 2, r);
+      int m = CopyRates(g_est[i].nombre, g_tfArr[g_iRef], 0, 2, r);
       string precio = (m > 0) ? FmtPrecio(r[m-1].close) : "sin datos";
       int senTot = 0;
       for(int tfi = 0; tfi < g_nTf; tfi++)
@@ -1833,419 +1807,32 @@ void OnTimer()
       EnviarTelegram(txt);
   }
 
-//====================================================================
-//  Estrategia ESTRUCTURA (port de escanearEstructura de nucleo.js)
-//  Impulso + retroceso + quiebre, con la misma puerta EMA.
-//  Codigos: 1E (entrada), 2E/3E (avisos), 2EB/3EB (entradas con quiebre)
-//  y sus reseteadas 1RE, 2RE/3RE, 2REB/3REB.
-//====================================================================
-double P_estImpulsoMinAtr   = 0.8;
-int    P_estMinVelasImpulso = 2;
-int    P_estMaxVelasImpulso = 3;
-double P_estCuerpoImpulso   = 0.35;
-// 20 velas = "el extremo del impulso tiene que ser el extremo de la ultima
-// hora" en M3. Ningun impulso de 2-3 velas sobrevive a eso: en la practica
-// la estrategia casi no llegaba a tener impulso. 8 velas mantiene la idea
-// (el extremo sigue siendo el del tramo reciente) sin bloquearla.
-int    P_estVentana         = 8;
-// El retroceso no puede pasarse del origen del impulso (enRetroceso exige
-// extremo <= impulsoOrigen), asi que la retraccion maxima posible es la
-// ALTURA de la pierna. Con impulsoMinAtr=0.8 y retrocesoMin=1.0 el minimo
-// quedaba POR ENCIMA del maximo alcanzable: cualquier pierna de 0.8 a 1.0
-// ATR no podia generar toque nunca. 0.6 ATR abre la banda de verdad.
-double P_estRetrocesoMinAtr = 0.6;
-double P_estRetrocesoMaxAtr = 3.0;
-int    P_estCaducidad       = 30;
-// 30 velas de espera en M3 son 90 minutos de silencio despues de CADA
-// entrada de Estructura. Es el mayor supresor de la estrategia.
-int    P_estEspera          = 10;
-
 //--------------------------------------------------------------------
-//  Los parametros estan en VELAS, y la misma cifra son minutos distintos
-//  segun la temporalidad. Esto se imprime al arrancar para no calibrar a
-//  ciegas: "espera=10 velas" son 30 min en M3 y 5 horas en M30.
+//  Eco de parametros: los mismos numeros, traducidos a minutos por TF.
 //--------------------------------------------------------------------
 void EcoParametros()
   {
    for(int t = 0; t < g_nTf; t++)
      {
       ENUM_TIMEFRAMES tf = g_tfArr[t];
-      string linea = "[EFECTIVO] " + g_tfTxtArr[t]
-                     + " W{caducidad=" + IntegerToString(P_caducidad) + "v"
-                     + " engano=" + IntegerToString(P_caducidadEngano) + "v"
-                     + " cruces=" + IntegerToString(P_ventanaCruces) + "v"
-                     + " ER=" + IntegerToString(P_ventanaER) + "v}"
-                     + " E{ventana=" + IntegerToString(P_estVentana) + "v"
-                     + " caducidad=" + IntegerToString(P_estCaducidad) + "v"
-                     + " espera=" + IntegerToString(P_estEspera) + "v}";
-      int mCad = (PeriodSeconds(tf) * P_caducidad) / 60;
-      int mEr  = (PeriodSeconds(tf) * P_estEspera) / 60;
-      int mVen = (PeriodSeconds(tf) * P_estVentana) / 60;
-      Log(linea + "  -> cada vela = " + IntegerToString(PeriodSeconds(tf) / 60)
-          + " min | caducidad W = " + IntegerToString(mCad)
-          + " min | espera E = " + IntegerToString(mEr)
-          + " min | ventana E = " + IntegerToString(mVen) + " min");
-     }
-  }
-
-struct SecuenciaE
-  {
-   Toque  t1, t2, t3;
-   int    nT;
-   int    ciclo;
-   bool   emitida;      // ya se entrego una entrada en este ciclo
-   bool   impulso;
-   int    impulsoBar;
-   double impulsoOrigen;
-   double impulsoExtremo;
-   bool   tienePico;
-   double pico;
-   int    ultimaEntradaBar;
-  };
-
-struct Impulso
-  {
-   bool   ok;
-   int    bar;
-   double origen;
-   double extremo;
-  };
-
-void NuevaSecuenciaE(SecuenciaE &s)
-  {
-   ZeroMemory(s);
-   s.ultimaEntradaBar = -100000;
-  }
-
-bool HayToqueE(const SecuenciaE &s)
-  {
-   return s.nT > 0;
-  }
-
-Toque UltimoToqueE(const SecuenciaE &s)
-  {
-   if(s.nT == 3)
-      return s.t3;
-   if(s.nT == 2)
-      return s.t2;
-   if(s.nT == 1)
-      return s.t1;
-   Toque z;
-   ZeroMemory(z);
-   return z;
-  }
-
-void PushToqueE(SecuenciaE &s, const Toque &t)
-  {
-   if(s.nT < 3)
-     {
-      if(s.nT == 0)
-         s.t1 = t;
-      else if(s.nT == 1)
-         s.t2 = t;
-      else
-         s.t3 = t;
-      s.nT++;
-      return;
-     }
-   s.t1 = s.t2;
-   s.t2 = s.t3;
-   s.t3 = t;
-  }
-
-Impulso DetectarImpulso(const MqlRates &r[], const int i, const bool venta, const double &atr[])
-  {
-   Impulso res;
-   res.ok = false;
-   res.bar = i;
-   res.origen = 0;
-   res.extremo = 0;
-   double atrI = atr[i];
-   if(!(atrI > 0))
-      return res;
-   int minVelas = MathMax(1, P_estMinVelasImpulso);
-   int maxVelas = MathMax(minVelas, P_estMaxVelasImpulso);
-   int ventana  = P_estVentana;
-   if(i - ventana + 1 < 0)
-      return res;
-   for(int len = minVelas; len <= maxVelas; len++)
-     {
-      int inicio = i - len + 1;
-      if(inicio < 0)
-         break;
-      double maxH = r[inicio].high, minL = r[inicio].low;
-      for(int j = inicio + 1; j <= i; j++)
-        {
-         if(r[j].high > maxH)
-            maxH = r[j].high;
-         if(r[j].low < minL)
-            minL = r[j].low;
-        }
-      double movimiento = maxH - minL;
-      if(movimiento < P_estImpulsoMinAtr * atrI)
-         continue;
-      double bodySum = 0;
-      for(int j = inicio; j <= i; j++)
-         bodySum += MathAbs(r[j].close - r[j].open);
-      double ratio = (movimiento > 0) ? bodySum / movimiento : 0;
-      if(ratio < P_estCuerpoImpulso)
-         continue;
-      bool dirOk = venta ? (r[i].close < r[inicio].open) : (r[i].close > r[inicio].open);
-      if(!dirOk)
-         continue;
-      double extremoVentana = venta ? 1.0e300 : -1.0e300;
-      for(int j = i - ventana + 1; j <= i; j++)
-         extremoVentana = venta ? MathMin(extremoVentana, r[j].low) : MathMax(extremoVentana, r[j].high);
-      double extremo = venta ? minL : maxH;
-      if(venta ? (extremo > extremoVentana) : (extremo < extremoVentana))
-         continue;
-      res.ok = true;
-      res.bar = i;
-      res.origen = venta ? maxH : minL;
-      res.extremo = extremo;
-      return res;
-     }
-   return res;
-  }
-
-void ProcesarBarraE(const MqlRates &r[], const int i, const bool venta,
-                    const double &e30[], const double &e50[], const double &e100[],
-                    const double &atr[], SecuenciaE &s, Evento &eventos[])
-  {
-   double atrI = atr[i];
-   bool   actE = (i == g_barraActual);   // solo la vela cerrada mueve el embudo
-   double cierre = r[i].close;
-   double extremo = venta ? r[i].high : r[i].low;
-
-   // 1. impulso nuevo solo si no hay uno vivo y paso el enfriamiento
-   bool impulsoDetectado = false;
-   if(!s.impulso && (i - s.ultimaEntradaBar) >= P_estEspera)
-     {
-      Impulso imp = DetectarImpulso(r, i, venta, atr);
-      if(imp.ok)
-        {
-         if(actE)
-            g_emb[g_tfIdx].imp++;
-         s.impulso = true;
-         s.impulsoBar = i;
-         s.impulsoOrigen = imp.origen;
-         s.impulsoExtremo = imp.extremo;
-         s.tienePico = false;
-         s.pico = 0;
-         s.emitida = false;   // ciclo nuevo
-         impulsoDetectado = true;
-        }
-     }
-   if(!s.impulso)
-      return;
-   // la vela que forma el impulso no puede sembrar su propio retroceso
-   if(impulsoDetectado)
-      return;
-
-   // 2. techo: si el cierre supera el origen del impulso, la pierna se rompio
-   double margenTecho = 0.3 * atrI;
-   bool sobreTecho = venta ? (cierre > s.impulsoOrigen + margenTecho)
-                           : (cierre < s.impulsoOrigen - margenTecho);
-   if(sobreTecho)
-     {
-      s.impulso = false;
-      s.impulsoBar = -1;
-      s.impulsoOrigen = 0;
-      s.impulsoExtremo = 0;
-      s.tienePico = false;
-      s.nT = 0;
-      s.ciclo = 0;
-      s.emitida = false;
-      return;
-     }
-
-   // 3. quiebre del nivel del ultimo toque, antes de actualizar la punta
-   if(HayToqueE(s))
-     {
-      Toque t = UltimoToqueE(s);
-      if(i > t.bar)
-        {
-         if((i - t.bar) > P_estCaducidad)
-           {
-            s.nT = 0;
-            s.impulso = false;
-            s.tienePico = false;
-            s.emitida = false;
-            return;
-           }
-         bool rompe = (t.nivel > 0) && (venta ? (cierre < t.nivel) : (cierre > t.nivel));
-         if(rompe)
-           {
-            if(actE)
-               g_emb[g_tfIdx].rompe++;
-            string base = (s.nT >= 3) ? "3EB" : ((s.nT == 2) ? "2EB" : "1E");
-            // §10: la pila solo exige ORDEN; la separacion solo se mide para el log.
-            bool alineada = venta ? (cierre < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i])
-                                  : (cierre > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i]);
-            int crE = CrucesEma30(r, e30, i, P_ventanaCruces);
-            double erE = ErDelTramo(r, s.impulsoBar, i, P_ventanaER);             double sep1E = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];             double sep2E = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
-            // la separacion solo se mide (va en el log): no filtra
-            bool bloqueadoE = (crE >= P_minCrucesBloqueo) || (erE < P_erMinQuiebre);
-            bool yaEmitidaE = P_unaPorSecuencia && s.emitida && (base != "1E");
-            // reparto exacto: cada quiebre cae en una sola de estas ramas
-            if(actE)
-              {
-               if(!alineada)                      g_emb[g_tfIdx].noAlinE++;
-               else if(crE >= P_minCrucesBloqueo) g_emb[g_tfIdx].blqCruz++;
-               else if(erE < P_erMinQuiebre)      g_emb[g_tfIdx].blqER++;
-               else if(yaEmitidaE)                g_emb[g_tfIdx].yaLa++;
-               else                               g_emb[g_tfIdx].emi++;
-              }
-            if(alineada && !bloqueadoE && !yaEmitidaE)
-              {
-               Emitir(eventos, i, venta, ConReset(base, s.ciclo), cierre, t.extremo, t.nivel,
-                      e30[i], e50[i], e100[i], cierre);
-               s.emitida = true;
-               s.ciclo++;              // el reset solo avanza si de verdad hubo senal
-               s.ultimaEntradaBar = i;
-              }
-            // antes se logueaba solo si la pila estaba alineada y se imprimian
-            // los tres campos siempre, asi que no se sabia cual habia fallado.
-            if(actE)
-              {
-               string motivoE = "";
-               if(!alineada)                      motivoE += " pila-no-alineada";
-               if(crE >= P_minCrucesBloqueo)      motivoE += " cruces=" + IntegerToString(crE);
-               if(erE < P_erMinQuiebre)           motivoE += " ER=" + DoubleToString(erE,2);
-               if(yaEmitidaE)                     motivoE += " ya-lanzada";
-               if(StringLen(motivoE) > 0)
-                  Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura quiebre " + g_tfTxt
-                      + " bloqueado:" + motivoE + " (sep=" + DoubleToString(sep1E,2) + "/"
-                      + DoubleToString(sep2E,2) + ")");
-              }
-            // Un quiebre bloqueado ya no tira la secuencia entera (Wonderizada
-            // reintenta el toque siguiente): se descarta el toque y se deja
-            // vivo el impulso, con su extremo, para que se forme otro retroceso.
-            s.nT = 0;
-            s.tienePico = false;
-            return;
-           }
-        }
-     }
-
-   // 4. continuacion: punta nueva = la pierna sigue, no hay retroceso
-   bool nuevaPunta = venta ? (r[i].low < s.impulsoExtremo) : (r[i].high > s.impulsoExtremo);
-   if(nuevaPunta)
-     {
-      s.impulsoExtremo = venta ? r[i].low : r[i].high;
-      s.impulsoBar = i;
-      s.tienePico = false;
-      return;
-     }
-
-   // 5. retroceso: se aleja de la punta sin superar el origen
-   bool enRetroceso = venta ? (extremo > s.impulsoExtremo && extremo <= s.impulsoOrigen)
-                            : (extremo < s.impulsoExtremo && extremo >= s.impulsoOrigen);
-   if(enRetroceso)
-     {
-      if(!s.tienePico)
-        {
-         s.tienePico = true;
-         s.pico = extremo;
-        }
-      else
-         s.pico = venta ? MathMax(s.pico, extremo) : MathMin(s.pico, extremo);
-     }
-
-   // 6. fin del retroceso: primera vela que cierra en la direccion del impulso
-   bool reversing = (i >= 1) && (venta ? (r[i].close < r[i-1].close) : (r[i].close > r[i-1].close));
-   double retraccion = s.tienePico
-                       ? (venta ? (s.pico - s.impulsoExtremo) : (s.impulsoExtremo - s.pico))
-                       : 0;
-   bool retroValido = (retraccion >= P_estRetrocesoMinAtr * atrI)
-                      && (retraccion <= P_estRetrocesoMaxAtr * atrI);
-
-   bool superaAnterior = true;
-   if(HayToqueE(s))
-     {
-      Toque u = UltimoToqueE(s);
-      superaAnterior = venta ? (s.pico > u.extremo) : (s.pico < u.extremo);
-     }
-   bool separado = true;
-   if(HayToqueE(s))
-     {
-      Toque uSep = UltimoToqueE(s);
-      separado = ((i - uSep.bar) >= P_separacionToques);
-     }
-   bool nuevoToque = s.tienePico && retroValido && reversing && separado && superaAnterior;
-
-   if(nuevoToque)
-     {
-      if(actE)
-         g_emb[g_tfIdx].toq++;
-      double nivelQuiebre = s.impulsoExtremo;
-      double contacto = s.pico;
-      Toque nt;
-      nt.bar = i;
-      nt.nivel = nivelQuiebre;
-      nt.extremo = contacto;
-      nt.alto = contacto;
-      nt.bajo = nivelQuiebre;
-      PushToqueE(s, nt);
-      s.tienePico = false;
-
-      // la 2E y la 3E son avisos: solo salen con la pila alineada
-      if(s.nT >= 2)
-        {
-         string codigo = (s.nT == 2) ? ConReset("2E", s.ciclo) : ConReset("3E", s.ciclo);
-         // §10: la pila solo exige ORDEN; la separacion solo se mide para el log.
-         bool alineada = venta ? (r[i].close < e30[i] && e30[i] <= e50[i] && e50[i] <= e100[i])
-                               : (r[i].close > e30[i] && e30[i] >= e50[i] && e50[i] >= e100[i]);
-         int crE2 = CrucesEma30(r, e30, i, P_ventanaCruces);          double erE2 = ErDelTramo(r, s.impulsoBar, i, P_ventanaER);          double sep1E2 = venta ? (e50[i]-e30[i])/atr[i] : (e30[i]-e50[i])/atr[i];          double sep2E2 = venta ? (e100[i]-e50[i])/atr[i] : (e50[i]-e100[i])/atr[i];
-         // §2: el ER se mide y se escribe en el log, pero no bloquea.
-         bool bloqueadoE2 = (crE2 >= P_minCrucesBloqueo);
-         if(alineada && !bloqueadoE2)
-           {
-            Emitir(eventos, i, venta, codigo, r[i].close, contacto, nivelQuiebre,
-                   e30[i], e50[i], e100[i], r[i].close);
-            // NO se marca s.emitida: la 2E/3E es un aviso, no la entrada. Al
-            // marcarla, P_unaPorSecuencia suprimia el 2EB/3EB (la entrada con
-            // quiebre) de la misma secuencia y la jugada se quedaba sin salida.
-           }
-         if(bloqueadoE2 && alineada && i == g_barraActual)
-            Log("[FILTRO] " + (venta?"VENTA":"COMPRA") + " Estructura toque " + g_tfTxt
-                + " bloqueado: cruces=" + IntegerToString(crE2) + " ER=" + DoubleToString(erE2,2)
-                + " sep=" + DoubleToString(sep1E2,2) + "/" + DoubleToString(sep2E2,2));
-        }
-     }
-  }
-
-void EscanearEstructura(const MqlRates &r[], Evento &eventos[])
-  {
-   ArrayResize(eventos, 0);
-   int n = ArraySize(r);
-   if(n < P_atrPeriodo + 5)
-      return;
-   g_barraActual = n - 1;   // solo la vela recien cerrada escribe log
-
-   double cierres[];
-   ArrayResize(cierres, n);
-   for(int i=0; i<n; i++)
-      cierres[i] = r[i].close;
-
-   double e30[], e50[], e100[], atr[];
-   CalcEma(cierres, P_emaContacto, e30);
-   CalcEma(cierres, P_emaTecho, e50);
-   CalcEma(cierres, P_emaFondo, e100);
-   CalcAtr(r, P_atrPeriodo, atr);
-
-   SecuenciaE venta, compra;
-   NuevaSecuenciaE(venta);
-   NuevaSecuenciaE(compra);
-
-   for(int i = P_atrPeriodo; i < n; i++)
-     {
-      // las EMAs valen 0 hasta la vela 100: sin este guard la maquina de
-      // estados arrancaba con EMA=0. Escanear ya lo comprobaba; este no.
-      if(!(atr[i] > 0) || !(e30[i] > 0) || !(e50[i] > 0) || !(e100[i] > 0))
-         continue;
-      ProcesarBarraE(r, i, true,  e30, e50, e100, atr, venta,  eventos);
-      ProcesarBarraE(r, i, false, e30, e50, e100, atr, compra, eventos);
+      int minVel = (PeriodSeconds(tf) * P_hchMinVelas) / 60;
+      int maxVel = (PeriodSeconds(tf) * P_hchMaxVelas) / 60;
+      int espVel = (PeriodSeconds(tf) * P_hchMaxEspera) / 60;
+      Log("[EFECTIVO] " + g_tfTxtArr[t]
+          + " HCH{score>=" + DoubleToString(P_hchMinScore, 0)
+          + " patron=" + IntegerToString(P_hchMinVelas) + "-" + IntegerToString(P_hchMaxVelas)
+          + "v (" + IntegerToString(minVel) + "-" + IntegerToString(maxVel) + " min)"
+          + " zigzag=" + DoubleToString(P_hchZZAtr, 1) + "xATR"
+          + " ruptura=" + DoubleToString(P_hchBufRuptura, 2) + " ATR"
+          + " espera=" + IntegerToString(P_hchMaxEspera) + "v ("
+          + IntegerToString(espVel) + " min)}");
+      Log("[EFECTIVO] " + g_tfTxtArr[t]
+          + " LIQ{swing=" + IntegerToString(P_liqSwing) + "v"
+          + " barrido<=" + IntegerToString(P_liqMaxBarrido) + "v"
+          + " rebote=" + DoubleToString(P_liqReboteAtr, 2) + "xATR en "
+          + IntegerToString(P_liqReboteVelas) + "v ("
+          + IntegerToString((PeriodSeconds(tf) * P_liqReboteVelas) / 60) + " min)"
+          + " nivel=" + IntegerToString(P_liqMaxEdadNivel) + "v}");
      }
   }
 
@@ -2416,71 +2003,4 @@ string EstadoH1(const string simbolo)
       return "";
    return tm.tendencia + " · " + tm.fase + " · rotura hace "
           + IntegerToString(tm.velasRotura) + " velas H1";
-  }
-
-//====================================================================
-//  Prioridad cuando el mismo lado da dos codigos en la misma vela
-//  (port de prioridadEvento: entrada > aviso y tier A > B > C)
-//====================================================================
-// OJO con las dos escalas: 2E/3E devuelven 5/6 y el resto 100+tier*10+rr.
-// No es un error: las dos estrategias nunca tienen el mismo patron, asi que
-// el empate es imposible. La escala baja es intencional (aviso < entrada) y
-// el hueco solo hace obvio que un aviso pierde contra cualquier entrada.
-//--------------------------------------------------------------------
-//  Prioridad: que gana cuando dos patrones caen en la MISMA vela y el
-//  MISMO lado (ADVERSARIO.md §8). Es un orden TOTAL: no hay dos codigos
-//  con el mismo rango, asi que el empate es imposible por construccion y
-//  no depende del orden en que se lleno el array de candidatos.
-//
-//  Criterio, de mas a menos, y el por que:
-//   1. la SEDUCTORA (1S) manda: su stop es la punta del tramo, un precio
-//      fijo, y no depende de donde este la escalera en ese momento.
-//   2. la ROTURA CON CUERPO (B), y dentro de ella la mas avanzada
-//      (3B > 2B > 1B): cada B exige que la tendencia rompiera otra punta.
-//   3. el TOQUE de la escalera, y dentro de el el mas temprano
-//      (1 > 2 > 3): el 1 es el toque fresco; el 3 llega con el tramo ya
-//      maduro, que es por lo que la escalera se corta en 3.
-//   4. detras de un reset (R) por delante de la original del mismo codigo:
-//      esa escalera ya sobrevivio a un engano.
-//   5. la familia ESTRUCTURA por detras de la Wonderizada: cuando las dos
-//      ven la misma jugada manda la regla madre (§1).
-//   6. los avisos de estructura, por debajo de toda entrada.
-//
-//  Para cambiar el orden basta mover un numero de la tabla.
-//--------------------------------------------------------------------
-int Prioridad(const string p)
-  {
-   // 6. avisos: no son entradas
-   if(p == "3RE" || p == "3E") return 6;
-   if(p == "2RE" || p == "2E") return 5;
-
-   int rank = 0;
-   // 1. la seductora
-   if     (p == "1SR") rank = 20;
-   else if(p == "1S")  rank = 19;
-   // 2. la rotura con cuerpo
-   else if(p == "3RB") rank = 18;
-   else if(p == "3B")  rank = 17;
-   else if(p == "2RB") rank = 16;
-   else if(p == "2B")  rank = 15;
-   else if(p == "1RB") rank = 14;
-   else if(p == "1B")  rank = 13;
-   // 3. el toque de la escalera
-   else if(p == "1R")  rank = 12;
-   else if(p == "1")   rank = 11;
-   else if(p == "2R")  rank = 10;
-   else if(p == "2")   rank = 9;
-   else if(p == "3R")  rank = 8;
-   else if(p == "3")   rank = 7;
-   // 4. familia estructura
-   else if(p == "3REB") rank = 6;
-   else if(p == "3EB")  rank = 5;
-   else if(p == "2REB") rank = 4;
-   else if(p == "2EB")  rank = 3;
-   else if(p == "1RE")  rank = 2;
-   else if(p == "1E")   rank = 1;
-   else
-      return 0;
-
-   return 100 + rank;
   }

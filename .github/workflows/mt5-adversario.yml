@@ -1,6 +1,7 @@
 name: MT5 adversario (demo -> Telegram)
 # Instala MetaTrader 5 en un runner Windows, entra en la cuenta DEMO, compila y
-# arranca el EA adversario. El EA calcula las senales de la escalera y las manda
+# arranca el EA adversario. El EA calcula las senales de HCH y del barrido de
+# liquidez (independientes entre si) y las manda
 # por WebRequest; si MT5 bloquea la salida (4014), deja el mensaje en
 # MQL5/Files/adv_pendientes.txt y el script de ejecucion lo entrega igual.
 #
@@ -8,8 +9,8 @@ name: MT5 adversario (demo -> Telegram)
 #   instalar_mt5.ps1   instala el terminal y compila el EA
 #   ejecutar_ea.ps1    configura cuenta/Telegram, arranca y vigila
 #
-# El EA procesa M3, M5, M15 y M30 en un solo terminal (multi-TF).
-# La tendencia mayor se calcula en H1.
+# El EA procesa M1, M3, M5, M15 y H1 en un solo terminal (multi-TF) sobre los
+# 4 activos. La tendencia mayor tambien se lee en H1 (solo etiqueta la senal).
 #
 # Secrets (Settings > Secrets and variables > Actions):
 #   MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, TELEGRAM_TOKEN, TELEGRAM_CHAT
@@ -30,6 +31,10 @@ on:
       panel:
         description: "Publicar el panel web en vivo (si/no)"
         default: "si"
+        required: true
+      tfs:
+        description: "Temporalidades que escanea (separadas por coma)"
+        default: "M1,M3,M5,M15,H1"
         required: true
 
 permissions:
@@ -89,10 +94,13 @@ jobs:
           S_OVR: ${{ inputs.servidor }}
           MIN: ${{ inputs.minutos }}
           TF_IN: M5
+          TFS_IN: ${{ inputs.tfs }}
           PANEL: ${{ inputs.panel }}
         run: |
           if ($env:S_OVR) { $env:MT5_SERVER = $env:S_OVR; Write-Host "servidor de prueba: $env:S_OVR" }
-          ./mt5-ea/scripts/ejecutar_ea.ps1 -Minutos ([int]$env:MIN) -Tf $env:TF_IN -Panel $env:PANEL
+          $tfs = if ($env:TFS_IN) { $env:TFS_IN } else { 'M1,M3,M5,M15,H1' }
+          Write-Host "escaneo: $tfs | grafico: $env:TF_IN | panel: $env:PANEL"
+          ./mt5-ea/scripts/ejecutar_ea.ps1 -Minutos ([int]$env:MIN) -Tf $env:TF_IN -Tfs $tfs -Panel $env:PANEL
 
       - name: Resumen (ultimas senales)
         if: always()
