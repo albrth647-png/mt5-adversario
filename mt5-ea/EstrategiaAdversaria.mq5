@@ -71,6 +71,7 @@ double P_hchBufStop       = 0.25;   // margen del stop (x ATR)
 //--------------------------------------------------------------------
 int    P_liqSwing         = 5;      // velas a cada lado de un swing
 int    P_liqAtrPeriodo    = 14;     // periodo del ATR
+double P_liqAtrTope       = 3.00;   // tope de un TR anomalo (x ATR); 0 = sin tope
 int    P_liqMaxEdadNivel  = 400;    // antiguedad maxima de un nivel (velas)
 double P_liqMinPerfora    = 0.10;   // perforacion minima del nivel (x ATR)
 double P_liqMaxPerfora    = 3.00;   // perforacion maxima; mas es ruptura (x ATR)
@@ -1495,7 +1496,7 @@ int OnInit()
       if(StringLen(u) == 0)
          continue;
       g_tfTxtArr[nVal] = u;
-      g_tfArr[nVal]   = PeriodoTxt(u);
+      g_tfArr[nVal]   = TfDeTexto(u);
       nVal++;
      }
    if(nVal == 0)
