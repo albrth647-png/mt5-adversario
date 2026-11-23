@@ -6,8 +6,8 @@
 //| por vela y lado (pueden coincidir en la misma vela):               |
 //|   HCH   hombro-cabeza-hombro bajista  (VENTA)                    |
 //|   HCHi  hombro-cabeza-hombro invertido (COMPRA)                  |
-//|   LIQ   barrido de liquidez: la mecha perfora un swing, vuelve a |
-//|         cerrar dentro y el precio rebota 1,5 ATR                 |
+//|   LIQ   barrido de liquidez: la mecha pincha un swing, el cierre  |
+//|         vuelve dentro y avisa al cierre de esa misma vela        |
 //|                                                                  |
 //| Temporalidades por defecto: M1, M3, M5, M15 y H1 (adv.cfg: tfs=).  |
 //| No opera: lee velas y manda la senal a Telegram por WebRequest.  |
@@ -66,24 +66,29 @@ bool   P_hchStopCabeza    = false;  // false = stop tras el hombro derecho
 double P_hchBufStop       = 0.25;   // margen del stop (x ATR)
 
 //--------------------------------------------------------------------
-//  Estrategia BARRIDO DE LIQUIDEZ: parametros del indicador
-//  BarridoLiquidez.mq5, con sus mismos valores por defecto.
+//  Estrategia BARRIDO DE LIQUIDEZ: port del indicador BarridoLiquidez_v2
+//  La senal es el barrido: la mecha perfora un nivel, el cierre vuelve
+//  dentro y se avisa al cierre de esa misma vela.
 //--------------------------------------------------------------------
-int    P_liqSwing         = 5;      // velas a cada lado de un swing
-int    P_liqAtrPeriodo    = 14;     // periodo del ATR
-double P_liqAtrTope       = 3.00;   // tope de un TR anomalo (x ATR); 0 = sin tope
-int    P_liqMaxEdadNivel  = 400;    // antiguedad maxima de un nivel (velas)
-double P_liqMinPerfora    = 0.10;   // perforacion minima del nivel (x ATR)
-double P_liqMaxPerfora    = 3.00;   // perforacion maxima; mas es ruptura (x ATR)
-int    P_liqMaxBarrido    = 4;      // velas maximas del barrido
-double P_liqMechaMin      = 0.40;   // mecha minima / rango de la vela
-double P_liqMechaAtr      = 0.30;   // mecha minima (x ATR)
-double P_liqReboteAtr     = 1.50;   // rebote minimo desde el extremo (x ATR)
-int    P_liqReboteVelas   = 10;     // velas maximas para el rebote
-double P_liqBufRuptura    = 0.10;   // margen para dar la zona por rota (x ATR)
-bool   P_liqColorContra   = true;   // la vela del extremo debe ser de color contrario
-bool   P_liqAlcista       = true;   // barrido de minimos (esperando subida)
-bool   P_liqBajista       = true;   // barrido de maximos (esperando bajada)
+int    P_liqSwing          = 5;      // velas a cada lado de un swing
+int    P_liqAtrPeriodo     = 14;     // periodo del ATR
+double P_liqAtrTope        = 3.00;   // tope de un TR anomalo (x ATR); 0 = sin tope
+int    P_liqLookback       = 1000;   // velas hacia atras donde buscar niveles
+double P_liqMinPerfora     = 0.05;   // perforacion minima del nivel (x ATR)
+double P_liqMaxPerfora     = 2.00;   // perforacion maxima; mas es ruptura (x ATR)
+double P_liqMechaRango     = 0.35;   // mecha minima / rango de la vela
+double P_liqMechaAtr       = 0.25;   // mecha minima (x ATR)
+double P_liqRangoAtr       = 0.75;   // rango minimo de la vela del barrido (x ATR)
+double P_liqMediaRangoAtr  = 0.65;   // rango medio de las 3 velas previas (x ATR)
+double P_liqRecorridoAtr   = 0.80;   // desplazamiento neto de 6 velas (x ATR)
+int    P_liqContextoVelas  = 4;      // velas previas para el filtro de color
+int    P_liqMinAlternadas  = 2;      // cambios de color minimos en ese tramo
+bool   P_liqFiltroContexto = false;  // filtro anti-tendencia limpia (opcional)
+int    P_liqCooldownVelas  = 8;      // velas minimas entre avisos del mismo lado
+double P_liqCooldownAtr    = 0.80;   // separacion minima de precio entre avisos (x ATR)
+double P_liqBufRuptura     = 0.10;   // invalidacion = extremo -/+ este margen (x ATR)
+bool   P_liqAlcista        = true;   // barrido de minimos (esperando subida)
+bool   P_liqBajista        = true;   // barrido de maximos (esperando bajada)
 
 //--------------------------------------------------------------------
 //  Modo backtest (Strategy Tester / GitHub Actions)
@@ -983,149 +988,185 @@ bool LiqSwing(const MqlRates &r[], const int i, const int dir)
    return true;
   }
 
-// La vela del extremo debe mostrar rechazo: color contrario y mecha larga.
-bool LiqMechaOk(const MqlRates &r[], const double &atr[], const int x, const int d,
-                const double nivel, const double extremo)
+// La vela del barrido debe rechazar el nivel: mecha larga y cierre dentro.
+//   d = +1  barrido de minimos: la mecha pincha por debajo del nivel, el
+//           cierre vuelve por encima y la vela es verde.
+//   d = -1  barrido de maximos: simetrico (mecha por encima del nivel,
+//           cierre por debajo y vela roja). El indicador v2 no lo era:
+//           pedia una vela VERDE cerrando bajo el maximo de otra verde,
+//           asi que el lado bajista casi nunca disparaba.
+bool LiqBarrido(const MqlRates &r[], const double &atr[], const int x,
+                const int nivelIdx, const int d)
   {
+   double a   = MathMax(atr[x], _Point);
    double rng = r[x].high - r[x].low;
    if(rng <= 0.0)
       return false;
-   if(P_liqColorContra && d * (r[x].close - r[x].open) <= 0.0)
-      return false;
-   double a = MathMax(atr[x], _Point);
-   if(d * (nivel - extremo) < P_liqMinPerfora * a)
-      return false;
+
+   double nivel = (d > 0) ? r[nivelIdx].low : r[nivelIdx].high;
+   double ext   = (d > 0) ? r[x].low  : r[x].high;
+   double perf  = d * (nivel - ext);            // >0: la mecha paso el nivel
+   if(perf < P_liqMinPerfora * a || perf > P_liqMaxPerfora * a)
+      return false;                             // nada, o ruptura de verdad
+   if(d * (r[x].close - nivel) <= 0.0)
+      return false;                             // tiene que cerrar dentro
+   if(d * (r[x].close - r[x].open) <= 0.0)
+      return false;                             // vela del lado del barrido
+
    double mecha = (d > 0) ? (MathMin(r[x].open, r[x].close) - r[x].low)
                           : (r[x].high - MathMax(r[x].open, r[x].close));
    if(mecha < P_liqMechaAtr * a)
       return false;
-   if(mecha / rng < P_liqMechaMin)
+   if(mecha / rng < P_liqMechaRango)
       return false;
    return true;
   }
 
-// Devuelve la vela en la que el rebote queda confirmado, o -1.
-int LiqConfirmacion(const MqlRates &r[], const double &atr[], const int e,
-                    const int nivelIdx, const int d, const double nivel,
-                    double &extremo, int &extremoIdx)
+// Anti-consolidacion: vela grande de verdad, dentro de un tramo que se mueve.
+bool LiqAntiConsolidacion(const MqlRates &r[], const double &atr[], const int x)
   {
-   int desde = MathMax(nivelIdx + 1, e - (P_liqMaxBarrido + P_liqReboteVelas + 1));
-   int primero = -1;
-   for(int j = desde; j <= e; j++)
-     {
-      if((d > 0 && r[j].low < nivel) || (d < 0 && r[j].high > nivel))
-        {
-         primero = j;
-         break;
-        }
-     }
-   if(primero < 0)
-      return -1;
-
-   extremo    = (d > 0) ? r[primero].low : r[primero].high;
-   extremoIdx = primero;
-   int fin = MathMin(primero + P_liqMaxBarrido - 1, e);
-   int reclaim = -1;
-   for(int j = primero; j <= fin; j++)
-     {
-      if(d > 0) { if(r[j].low  < extremo) { extremo = r[j].low;  extremoIdx = j; } }
-      else      { if(r[j].high > extremo) { extremo = r[j].high; extremoIdx = j; } }
-      double a = MathMax(atr[j], _Point);
-      if(d * (nivel - extremo) > P_liqMaxPerfora * a)
-         return -1;                        // ruptura, no barrido
-      if(d * (r[j].close - nivel) > 0.0)  // cierre de vuelta dentro del nivel
-        {
-         reclaim = j;
-         break;
-        }
-     }
-   if(reclaim < 0)
-      return -1;
-   if(!LiqMechaOk(r, atr, extremoIdx, d, nivel, extremo))
-      return -1;
-
-   for(int j = reclaim + 1; j <= e; j++)
-     {
-      double a = MathMax(atr[j], _Point);
-      double avance = d * (r[j].close - extremo);
-      if(avance < -P_liqBufRuptura * a)
-         return -1;                        // zona rota
-      if(avance >= P_liqReboteAtr * a)
-         return j;                         // rebote confirmado
-      if(j - reclaim >= P_liqReboteVelas)
-         return -1;                        // expirada
-     }
-   return -1;
+   if(x < 6)
+      return false;
+   double a = MathMax(atr[x], _Point);
+   if(r[x].high - r[x].low < P_liqRangoAtr * a)
+      return false;
+   double suma = 0.0;
+   for(int j = x - 3; j <= x - 1; j++)
+      suma += r[j].high - r[j].low;
+   if(suma / 3.0 < P_liqMediaRangoAtr * a)
+      return false;
+   // Desplazamiento neto cierre-a-cierre (no el recorrido de las 6 velas:
+   // sumar rangos convierte una vela de ida y vuelta en "tendencia").
+   if(MathAbs(r[x].close - r[x - 6].close) < P_liqRecorridoAtr * a)
+      return false;
+   return true;
   }
 
+// Filtro OPCIONAL (P_liqFiltroContexto): descarta el barrido si las velas
+// previas vienen en una tendencia limpia. Apagado por defecto porque
+// bloquea justo los tramos con direccion, que son los que interesan.
+bool LiqContextoMixto(const MqlRates &r[], const int x)
+  {
+   if(x - P_liqContextoVelas < 0)
+      return false;
+   int cambios = 0, prev = 0;
+   for(int j = x - P_liqContextoVelas; j < x; j++)
+     {
+      int col = (r[j].close > r[j].open) ? 1 : ((r[j].close < r[j].open) ? -1 : 0);
+      if(col == 0)
+         continue;
+      if(prev != 0 && col != prev)
+         cambios++;
+      prev = col;
+     }
+   return (cambios >= P_liqMinAlternadas);
+  }
+
+// Cooldown por simbolo / temporalidad / lado: 16 simbolos x 8 TF x 2 lados
+// fijos. Con la configuracion normal sobran; si algun dia se pasan de 16,
+// los ultimos comparten la marca.
+struct LiqMarca
+  {
+   datetime barra;
+   double   precio;
+  };
+LiqMarca g_liqMarca[16][8][2];
+int      g_simActual = 0;   // indice en g_est; lo fija Revisar()
+
+//--------------------------------------------------------------------
+//  Escaneo del barrido en la ULTIMA VELA CERRADA (r[n-1]).
+//  La senal nace en esa misma vela: entrada al cierre, invalidacion a
+//  0,10 ATR del extremo de la mecha. No se espera el rebote: en la
+//  version anterior la senal llegaba 1,5 ATR tarde, con el stop a 1,6.
+//--------------------------------------------------------------------
 void EscanearLiquidez(const MqlRates &r[], Evento &eventos[])
   {
    ArrayResize(eventos, 0);
    int n = ArraySize(r);
-   if(n < P_liqAtrPeriodo * 5 + 2 * P_liqSwing + 60)
+   if(n < P_liqAtrPeriodo * 5 + 2 * P_liqSwing + 10)
       return;
-   int e = n - 1;
+   int e = n - 1;                             // ultima vela CERRADA
 
-   int desdeAtr = MathMax(0, e - (P_liqMaxEdadNivel + 2 * P_liqSwing + 5 * P_liqAtrPeriodo));
+   int desdeAtr = MathMax(0, e - (P_liqLookback + 5 * P_liqAtrPeriodo));
    double atr[];
    LiqAtr(r, desdeAtr, e, atr);
+   double atrE = MathMax(atr[e], _Point);
 
-   // Un nivel barrido en la ventana de rebote puede tener hasta MaxEdadNivel
-   // velas de antiguedad en el momento del barrido.
-   int desde = MathMax(P_liqSwing, e - P_liqMaxEdadNivel - P_liqMaxBarrido - P_liqReboteVelas - 2);
+   if(!LiqAntiConsolidacion(r, atr, e))
+      return;
+   if(P_liqFiltroContexto && !LiqContextoMixto(r, e))
+      return;
+
+   int sim = g_simActual;
+   if(sim < 0)
+      sim = 0;
+   if(sim > 15)
+      sim = 15;
    string tend = TendenciaEmas(r);
+   int desde = MathMax(P_liqSwing, e - P_liqLookback);
 
-   Evento mejor[2];
-   int    mejorExt[2];
-   mejorExt[0] = -1;
-   mejorExt[1] = -1;
-
-   for(int i = desde; i + P_liqSwing <= e; i++)
+   for(int s = 0; s < 2; s++)
      {
-      for(int s = 0; s < 2; s++)
+      int d = (s == 0) ? +1 : -1;
+      if(d > 0 && !P_liqAlcista)
+         continue;
+      if(d < 0 && !P_liqBajista)
+         continue;
+
+      // El nivel mas reciente (swing confirmado) que la mecha haya barrido.
+      // El swing se confirma con P_liqSwing velas a cada lado, asi que el
+      // pivote mas nuevo posible es e-P_liqSwing-1: la vela del barrido no
+      // puede formar parte de su ventana derecha (su mecha rompe el nivel).
+      int nivelIdx = -1;
+      for(int i = e - P_liqSwing - 1; i >= desde; i--)
         {
-         int d = (s == 0) ? +1 : -1;
-         if(d > 0 && !P_liqAlcista)
-            continue;
-         if(d < 0 && !P_liqBajista)
-            continue;
          if(!LiqSwing(r, i, d))
             continue;
          g_emb[g_tfIdx].liqNiveles++;
-
-         double nivel = (d > 0) ? r[i].low : r[i].high;
-         double ext   = 0.0;
-         int    extIdx = -1;
-         int    conf = LiqConfirmacion(r, atr, e, i, d, nivel, ext, extIdx);
-         if(conf != e)
-            continue;
-
-         int lado = (d > 0) ? 1 : 0;          // barrido de minimos -> COMPRA
-         if(extIdx <= mejorExt[lado])
-            continue;
-         mejorExt[lado] = extIdx;
-
-         Evento ev;
-         ev.bar       = e;
-         ev.lado      = (lado == 0) ? "VENTA" : "COMPRA";
-         ev.patron    = "LIQ";
-         ev.precio    = r[e].close;
-         ev.invalida  = ext - d * P_liqBufRuptura * MathMax(atr[e], _Point);
-         ev.nivel     = nivel;
-         ev.score     = d * (r[e].close - ext) / MathMax(atr[e], _Point);
-         ev.prio      = 2;
-         ev.tendencia = tend;
-         mejor[lado]  = ev;
+         if(LiqBarrido(r, atr, e, i, d))
+           {
+            nivelIdx = i;
+            break;
+           }
         }
-     }
-
-   for(int lado = 0; lado < 2; lado++)
-     {
-      if(mejorExt[lado] < 0)
+      if(nivelIdx < 0)
          continue;
+
+      int lado = (d > 0) ? 1 : 0;              // barrido de minimos -> COMPRA
+
+      // Cooldown: ni dos avisos del mismo lado en 8 velas sin alejarse 0,80 ATR.
+      datetime ultBarra  = g_liqMarca[sim][g_tfIdx][lado].barra;
+      double   ultPrecio = g_liqMarca[sim][g_tfIdx][lado].precio;
+      if(ultBarra > 0 && ultBarra <= r[e].time)
+        {
+         int seg = (int)PeriodSeconds(g_tf);
+         if(seg < 1)
+            seg = 1;
+         int velas = (int)((r[e].time - ultBarra) / seg);
+         if(velas < P_liqCooldownVelas
+            && MathAbs(r[e].close - ultPrecio) < P_liqCooldownAtr * atrE)
+            continue;
+        }
+
+      double ext = (d > 0) ? r[e].low : r[e].high;
+
+      Evento ev;
+      ev.bar       = e;
+      ev.lado      = (lado == 0) ? "VENTA" : "COMPRA";
+      ev.patron    = "LIQ";
+      ev.precio    = r[e].close;               // cierre de la vela del barrido
+      ev.invalida  = ext - d * P_liqBufRuptura * atrE;
+      ev.nivel     = (d > 0) ? r[nivelIdx].low : r[nivelIdx].high;
+      ev.score     = MathAbs(r[e].close - ext) / atrE;
+      ev.prio      = 2;
+      ev.tendencia = tend;
+
+      g_liqMarca[sim][g_tfIdx][lado].barra  = r[e].time;
+      g_liqMarca[sim][g_tfIdx][lado].precio = r[e].close;
+
       int k = ArraySize(eventos);
       ArrayResize(eventos, k + 1);
-      eventos[k] = mejor[lado];
+      eventos[k] = ev;
       g_emb[g_tfIdx].liqEmite++;
      }
   }
@@ -1243,6 +1284,7 @@ void Revisar(const int idx)
       g_tf    = g_tfArr[tfi];
       g_tfTxt = g_tfTxtArr[tfi];
       g_tfIdx = tfi;
+      g_simActual = idx;
 
       // Chequeo barato antes de copiar: si la vela en formacion no cambio, no
       // cerro nada nuevo. Antes se copiaban 3000 velas x 4 TF x 4 simbolos
@@ -1830,12 +1872,16 @@ void EcoParametros()
           + " espera=" + IntegerToString(P_hchMaxEspera) + "v ("
           + IntegerToString(espVel) + " min)}");
       Log("[EFECTIVO] " + g_tfTxtArr[t]
-          + " LIQ{swing=" + IntegerToString(P_liqSwing) + "v"
-          + " barrido<=" + IntegerToString(P_liqMaxBarrido) + "v"
-          + " rebote=" + DoubleToString(P_liqReboteAtr, 2) + "xATR en "
-          + IntegerToString(P_liqReboteVelas) + "v ("
-          + IntegerToString((PeriodSeconds(tf) * P_liqReboteVelas) / 60) + " min)"
-          + " nivel=" + IntegerToString(P_liqMaxEdadNivel) + "v}");
+          + " LIQ{entrada=cierre del barrido"
+          + " swing=" + IntegerToString(P_liqSwing) + "v"
+          + " perforacion=" + DoubleToString(P_liqMinPerfora, 2) + "-"
+          + DoubleToString(P_liqMaxPerfora, 2) + "xATR"
+          + " mecha>=" + DoubleToString(P_liqMechaRango, 2) + " rango y "
+          + DoubleToString(P_liqMechaAtr, 2) + "xATR"
+          + " cooldown=" + IntegerToString(P_liqCooldownVelas) + "v/"
+          + DoubleToString(P_liqCooldownAtr, 2) + "xATR"
+          + " stop=" + DoubleToString(P_liqBufRuptura, 2) + "xATR"
+          + " nivel=" + IntegerToString(P_liqLookback) + "v}");
      }
   }
 
