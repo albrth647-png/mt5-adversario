@@ -29,8 +29,8 @@ on:
         default: ""
         required: false
       tfs:
-        description: "Temporalidades separadas por coma"
-        default: "M5,M15,M30,H1,H4"
+        description: "Temporalidades separadas por coma (M1 basta: el replay saca M3..H4 de ahí)"
+        default: "M1"
         required: true
 
 permissions:
