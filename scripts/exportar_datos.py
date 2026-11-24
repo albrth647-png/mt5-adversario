@@ -139,40 +139,54 @@ def tramo(tf, ini, fin, intentos=3):
     return None
 
 
+def pedir_rango(tf, desde, hasta, intentos=5):
+    for i in range(intentos):
+        rates = mt5.copy_rates_range(SYMBOL, tf, desde, hasta)
+        if rates is not None and len(rates) > 0:
+            return rates
+        print(f"    sin datos todavía (intento {i + 1}/{intentos})...")
+        time.sleep(15)
+    return None
+
+
 def velas(tf_nombre, tf, desde, hasta):
-    """Baja el histórico tramo a tramo, del presente hacia atrás.
-
-    Se detiene tras 3 tramos vacíos seguidos (ahí acaba lo que ofrece el
-    bróker) y devuelve las velas ordenadas y sin duplicados.
+    """Baja el rango pedido y, si el bróker corta antes, intenta ampliar
+    hacia atrás tramo a tramo. Devuelve velas ordenadas y sin duplicados.
     """
-    paso = dt.timedelta(days=PASO_DIAS.get(tf_nombre, 90))
+    rates = pedir_rango(tf, desde, hasta)
 
-    # Pedir muchas barras de golpe empuja al terminal a descargar el máximo
-    # histórico que tenga del servidor antes de ir tramo a tramo.
-    minutos = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30,
-               "H1": 60, "H4": 240, "D1": 1440}.get(tf_nombre, 60)
-    estimadas = int((hasta - desde).total_seconds() / (60 * minutos)) + 50
-    mt5.copy_rates_from_pos(SYMBOL, tf, 0, min(estimadas, 1_500_000))
+    if rates is None:
+        for meses in (18, 12, 6, 3):
+            recorte = hasta - dt.timedelta(days=int(30.5 * meses))
+            print(f"    reintento con ventana de {meses} meses...")
+            rates = pedir_rango(tf, recorte, hasta, intentos=3)
+            if rates is not None:
+                print(f"    el bróker solo entregó desde {recorte:%Y.%m.%d}")
+                break
 
-    trozos = []
-    fin = hasta
-    vacios = 0
-    while fin > desde and vacios < 3:
-        ini = max(desde, fin - paso)
-        rates = tramo(tf, ini, fin)
-        if rates is not None:
-            trozos.append(rates)
-            vacios = 0
-        else:
-            vacios += 1
-        print(f"    {ini:%Y.%m.%d}..{fin:%Y.%m.%d}: "
-              f"{'ok' if rates is not None else 'vacío'}")
-        fin = ini
-
-    if not trozos:
+    if rates is None:
+        # Diagnóstico: ¿hay algo reciente de esta temporalidad?
+        muestra = mt5.copy_rates_from_pos(SYMBOL, tf, 0, 200)
+        print(f"    sondeo de las últimas 200 velas: "
+              f"{0 if muestra is None else len(muestra)}")
         return None
 
-    todas = np.concatenate(trozos)
+    # Intentar llegar más atrás de donde empezó el bróker.
+    paso = dt.timedelta(days=PASO_DIAS.get(tf_nombre, 90))
+    partes = [rates]
+    inicio = dt.datetime.fromtimestamp(int(rates[0]["time"]), dt.timezone.utc)
+    while inicio > desde + paso:
+        fin = inicio
+        ini = max(desde, fin - paso)
+        extra = tramo(tf, ini, fin)
+        if extra is None:
+            print(f"    {ini:%Y.%m.%d}..{fin:%Y.%m.%d}: vacío (ahí acaba el histórico)")
+            break
+        partes.append(extra)
+        inicio = dt.datetime.fromtimestamp(int(extra[0]["time"]), dt.timezone.utc)
+        print(f"    ampliado hasta {inicio:%Y.%m.%d}")
+
+    todas = np.concatenate(partes)
     _, idx = np.unique(todas["time"], return_index=True)
     return todas[np.sort(idx)]
 
