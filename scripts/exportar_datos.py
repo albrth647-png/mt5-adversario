@@ -50,7 +50,7 @@ TF_MAP = {
 def parse_fecha(texto):
     for fmt in ("%Y.%m.%d", "%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
         try:
-            return dt.datetime.strptime(texto, fmt)
+            return dt.datetime.strptime(texto, fmt).replace(tzinfo=dt.timezone.utc)
         except ValueError:
             continue
     raise SystemExit(f"Fecha no válida: {texto}")
@@ -193,7 +193,10 @@ def velas(tf_nombre, tf, desde, hasta):
     paso = dt.timedelta(days=PASO_DIAS.get(tf_nombre, 90))
     partes = [rates]
     inicio = dt.datetime.fromtimestamp(int(rates[0]["time"]), dt.timezone.utc)
-    while inicio > desde + paso:
+    extra_max = 12
+    extra_hechos = 0
+    while inicio > desde + paso and extra_hechos < extra_max:
+        extra_hechos += 1
         fin = inicio
         ini = max(desde, fin - paso)
         extra = tramo(tf, ini, fin)
@@ -228,7 +231,7 @@ def main():
     conectar()
     elegir_simbolo()
 
-    hasta = parse_fecha(HASTA) if HASTA else dt.datetime.now()
+    hasta = parse_fecha(HASTA) if HASTA else dt.datetime.now(dt.timezone.utc)
     desde = parse_fecha(DESDE) if DESDE else hasta - dt.timedelta(days=int(365.25 * YEARS))
 
     print(f"Rango: {desde:%Y.%m.%d} -> {hasta:%Y.%m.%d} | TFs: {', '.join(TFS)}")
