@@ -20,6 +20,8 @@ import os
 import sys
 import time
 
+import numpy as np
+
 try:
     import MetaTrader5 as mt5
 except ImportError:
@@ -121,30 +123,58 @@ def elegir_simbolo():
     print(f"Símbolo listo: {SYMBOL}")
 
 
-def velas(tf, desde, hasta):
-    """Pide el rango y reintenta: MT5 descarga el histórico del servidor.
+# Días por tramo al pedir el histórico hacia atrás. El terminal solo descarga
+# del servidor los tramos que se le piden, y con trozos pequeños llega más
+# lejos que con una única petición de dos años.
+PASO_DIAS = {"M1": 7, "M3": 14, "M5": 21, "M15": 60, "M30": 90,
+             "H1": 120, "H4": 180, "D1": 365}
 
-    Devuelve (rates, desde_real). Las temporalidades finas (M1/M3/M5) necesitan
-    más tiempo de descarga; si el bróker no guarda tanto histórico, se recorta
-    la ventana y se informa del rango realmente cubierto.
-    """
-    for intento in range(1, 13):
-        rates = mt5.copy_rates_range(SYMBOL, tf, desde, hasta)
+
+def tramo(tf, ini, fin, intentos=3):
+    for _ in range(intentos):
+        rates = mt5.copy_rates_range(SYMBOL, tf, ini, fin)
         if rates is not None and len(rates) > 0:
-            return rates, desde
-        print(f"    sin datos todavía (intento {intento}/12), esperando descarga...")
-        time.sleep(15)
+            return rates
+        time.sleep(8)
+    return None
 
-    for meses in (18, 12, 6, 3):
-        recorte = hasta - dt.timedelta(days=int(30.5 * meses))
-        print(f"    reintento con ventana de {meses} meses...")
-        for _ in range(4):
-            rates = mt5.copy_rates_range(SYMBOL, tf, recorte, hasta)
-            if rates is not None and len(rates) > 0:
-                print(f"    el bróker solo entregó desde {recorte:%Y.%m.%d}")
-                return rates, recorte
-            time.sleep(15)
-    return None, None
+
+def velas(tf_nombre, tf, desde, hasta):
+    """Baja el histórico tramo a tramo, del presente hacia atrás.
+
+    Se detiene tras 3 tramos vacíos seguidos (ahí acaba lo que ofrece el
+    bróker) y devuelve las velas ordenadas y sin duplicados.
+    """
+    paso = dt.timedelta(days=PASO_DIAS.get(tf_nombre, 90))
+
+    # Pedir muchas barras de golpe empuja al terminal a descargar el máximo
+    # histórico que tenga del servidor antes de ir tramo a tramo.
+    minutos = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30,
+               "H1": 60, "H4": 240, "D1": 1440}.get(tf_nombre, 60)
+    estimadas = int((hasta - desde).total_seconds() / (60 * minutos)) + 50
+    mt5.copy_rates_from_pos(SYMBOL, tf, 0, min(estimadas, 1_500_000))
+
+    trozos = []
+    fin = hasta
+    vacios = 0
+    while fin > desde and vacios < 3:
+        ini = max(desde, fin - paso)
+        rates = tramo(tf, ini, fin)
+        if rates is not None:
+            trozos.append(rates)
+            vacios = 0
+        else:
+            vacios += 1
+        print(f"    {ini:%Y.%m.%d}..{fin:%Y.%m.%d}: "
+              f"{'ok' if rates is not None else 'vacío'}")
+        fin = ini
+
+    if not trozos:
+        return None
+
+    todas = np.concatenate(trozos)
+    _, idx = np.unique(todas["time"], return_index=True)
+    return todas[np.sort(idx)]
 
 
 def escribir(nombre_tf, rates):
@@ -153,7 +183,7 @@ def escribir(nombre_tf, rates):
         w = csv.writer(f, delimiter=";")
         w.writerow(["Date", "Open", "High", "Low", "Close", "Volume"])
         for r in rates:
-            fecha = dt.datetime.utcfromtimestamp(int(r["time"])).strftime("%Y.%m.%d %H:%M")
+            fecha = dt.datetime.fromtimestamp(int(r["time"]), dt.timezone.utc).strftime("%Y.%m.%d %H:%M")
             w.writerow([fecha, f"{r['open']:.5f}", f"{r['high']:.5f}",
                         f"{r['low']:.5f}", f"{r['close']:.5f}", int(r["tick_volume"])])
     mb = os.path.getsize(ruta) / (1024 * 1024)
@@ -180,14 +210,16 @@ def main():
             resumen.append(f"{nombre}: omitida (no soportada)")
             continue
         print(f"Descargando {nombre}...")
-        rates, desde_real = velas(tf, desde, hasta)
+        rates = velas(nombre, tf, desde, hasta)
         if rates is None:
             print(f"{nombre}: sin datos")
             resumen.append(f"{nombre}: sin datos")
             continue
         n, mb = escribir(nombre, rates)
         total += n
-        cobertura = "" if desde_real == desde else f" (desde {desde_real:%Y.%m.%d})"
+        inicio_real = dt.datetime.fromtimestamp(int(rates[0]["time"]), dt.timezone.utc)
+        cobertura = "" if (inicio_real - desde) < dt.timedelta(days=45) else \
+            f" (el bróker solo da desde {inicio_real:%Y.%m.%d})"
         resumen.append(f"{nombre}: {n} velas ({mb:.1f} MB){cobertura}")
 
     resumen.append(f"total velas: {total}")

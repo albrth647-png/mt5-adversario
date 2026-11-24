@@ -86,6 +86,24 @@ jobs:
           if (-not (Test-Path "$env:MT5_DIR\terminal64.exe")) { throw 'MT5 no quedó instalado' }
           Write-Host 'MT5 instalado.'
 
+      - name: Permitir histórico profundo
+        shell: pwsh
+        run: |
+          # Sin esto el terminal limita las barras que descarga y M1/M3/M5
+          # se cortan a los pocos meses.
+          $dir = Join-Path $env:MT5_DIR 'config'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $ini = Join-Path $dir 'common.ini'
+          $txt = if (Test-Path $ini) { Get-Content $ini -Raw } else { '' }
+          if ($txt -match '(?m)^\[Charts\]') {
+            if ($txt -match '(?m)^MaxBars=') { $txt = $txt -replace '(?m)^MaxBars=.*$', 'MaxBars=Unlimited' }
+            else { $txt = $txt -replace '(?m)^\[Charts\]', "[Charts]`r`nMaxBars=Unlimited" }
+          } else {
+            $txt = $txt.TrimEnd() + "`r`n`r`n[Charts]`r`nMaxBars=Unlimited`r`n"
+          }
+          Set-Content -Path $ini -Value $txt -Encoding ASCII
+          Write-Host "MaxBars aplicado en $ini"
+
       - name: Preparar Python
         uses: actions/setup-python@v5
         with:
