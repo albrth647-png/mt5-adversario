@@ -86,6 +86,25 @@ jobs:
           if (-not (Test-Path "$env:MT5_DIR\terminal64.exe")) { throw 'MT5 no quedó instalado' }
           Write-Host 'MT5 instalado.'
 
+      - name: Subir el tope de barras del terminal
+        shell: pwsh
+        run: |
+          # "Max bars in chart" limita cuánto histórico entrega MT5. El valor
+          # de la interfaz "Unlimited" no sirve en el .ini: hay que poner un
+          # número grande o el terminal arranca sin datos.
+          $dir = Join-Path $env:MT5_DIR 'config'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $ini = Join-Path $dir 'common.ini'
+          $txt = if (Test-Path $ini) { Get-Content $ini -Raw } else { '' }
+          if ($txt -match '(?m)^\[Charts\]') {
+            if ($txt -match '(?m)^MaxBars=') { $txt = $txt -replace '(?m)^MaxBars=.*$', 'MaxBars=100000000' }
+            else { $txt = $txt -replace '(?m)^\[Charts\]', "[Charts]`r`nMaxBars=100000000" }
+          } else {
+            $txt = $txt.TrimEnd() + "`r`n`r`n[Charts]`r`nMaxBars=100000000`r`n"
+          }
+          Set-Content -Path $ini -Value $txt -Encoding ASCII
+          Select-String -Path $ini -Pattern 'MaxBars'
+
       - name: Preparar Python
         uses: actions/setup-python@v5
         with:

@@ -107,6 +107,10 @@ def conectar():
     else:
         print("Aviso: sin account_info (puede faltar login)")
 
+    tinfo = mt5.terminal_info()
+    if tinfo:
+        print(f"Terminal build {tinfo.build} · maxbars={tinfo.maxbars} · conectado={tinfo.connected}")
+
 
 def elegir_simbolo():
     if mt5.symbol_info(SYMBOL) is None:
@@ -165,10 +169,24 @@ def velas(tf_nombre, tf, desde, hasta):
                 break
 
     if rates is None:
-        # Diagnóstico: ¿hay algo reciente de esta temporalidad?
+        # Pedir por posición empuja al terminal a descargar del servidor el
+        # histórico de esa temporalidad (una petición por rango no siempre lo
+        # dispara, sobre todo en M1).
+        minutos = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30,
+                   "H1": 60, "H4": 240}.get(tf_nombre, 60)
+        estimadas = int((hasta - desde).total_seconds() / (60 * minutos)) + 100
+        print(f"    probando descarga por posición ({estimadas} velas)...")
+        for intento in range(1, 4):
+            rates = mt5.copy_rates_from_pos(SYMBOL, tf, 0, min(estimadas, 1_200_000))
+            if rates is not None and len(rates) > 0:
+                print(f"    descargadas {len(rates)} velas por posición")
+                break
+            print(f"    todavía nada (intento {intento}/3)")
+            time.sleep(20)
+
+    if rates is None:
         muestra = mt5.copy_rates_from_pos(SYMBOL, tf, 0, 200)
-        print(f"    sondeo de las últimas 200 velas: "
-              f"{0 if muestra is None else len(muestra)}")
+        print(f"    sondeo de 200 velas recientes: {0 if muestra is None else len(muestra)}")
         return None
 
     # Intentar llegar más atrás de donde empezó el bróker.
