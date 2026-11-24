@@ -54,18 +54,49 @@ def parse_fecha(texto):
     raise SystemExit(f"Fecha no válida: {texto}")
 
 
+def ruta_terminal():
+    """El paquete no siempre encuentra el terminal: hay que darle la ruta."""
+    candidatos = [
+        os.environ.get("MT5_PATH", ""),
+        os.path.join(os.environ.get("MT5_DIR", r"C:\Program Files\MetaTrader 5"), "terminal64.exe"),
+        r"C:\Program Files\MetaTrader 5\terminal64.exe",
+        r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe",
+    ]
+    for base in (r"C:\Program Files", r"C:\Program Files (x86)"):
+        if os.path.isdir(base):
+            for name in os.listdir(base):
+                if "metatrader" in name.lower():
+                    candidatos.append(os.path.join(base, name, "terminal64.exe"))
+            for exe in ("terminal64.exe",):
+                p = os.path.join(base, exe)
+                if os.path.exists(p):
+                    candidatos.append(p)
+    for c in candidatos:
+        if c and os.path.exists(c):
+            return c
+    return ""
+
+
 def conectar():
     login = os.environ.get("MT5_LOGIN", "").strip()
     password = os.environ.get("MT5_PASSWORD", "")
     server = os.environ.get("MT5_SERVER", "").strip()
+    terminal = ruta_terminal()
 
-    if login and password and server:
-        ok = mt5.initialize(login=int(login), password=password, server=server, timeout=120000)
-    else:
-        ok = mt5.initialize(timeout=120000)
+    print(f"Terminal: {terminal or '(ruta por defecto del paquete)'}")
+    args = {"login": int(login), "password": password, "server": server, "timeout": 180000} \
+        if (login and password and server) else {"timeout": 180000}
+
+    ok = False
+    if terminal:
+        ok = mt5.initialize(terminal, **args)
+    if not ok:
+        print("Reintento sin ruta explícita:", mt5.last_error())
+        ok = mt5.initialize(**args)
 
     if not ok:
         print("No se pudo iniciar MT5:", mt5.last_error())
+        print("terminal64.exe existe:", bool(terminal) and os.path.exists(terminal))
         sys.exit(1)
 
     info = mt5.account_info()
