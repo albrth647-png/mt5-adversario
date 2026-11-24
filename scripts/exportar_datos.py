@@ -122,14 +122,29 @@ def elegir_simbolo():
 
 
 def velas(tf, desde, hasta):
-    """Pide el rango y reintenta: MT5 descarga el histórico del servidor."""
-    for intento in range(1, 6):
+    """Pide el rango y reintenta: MT5 descarga el histórico del servidor.
+
+    Devuelve (rates, desde_real). Las temporalidades finas (M1/M3/M5) necesitan
+    más tiempo de descarga; si el bróker no guarda tanto histórico, se recorta
+    la ventana y se informa del rango realmente cubierto.
+    """
+    for intento in range(1, 13):
         rates = mt5.copy_rates_range(SYMBOL, tf, desde, hasta)
         if rates is not None and len(rates) > 0:
-            return rates
-        print(f"    sin datos todavía (intento {intento}/5), esperando descarga...")
-        time.sleep(10)
-    return None
+            return rates, desde
+        print(f"    sin datos todavía (intento {intento}/12), esperando descarga...")
+        time.sleep(15)
+
+    for meses in (18, 12, 6, 3):
+        recorte = hasta - dt.timedelta(days=int(30.5 * meses))
+        print(f"    reintento con ventana de {meses} meses...")
+        for _ in range(4):
+            rates = mt5.copy_rates_range(SYMBOL, tf, recorte, hasta)
+            if rates is not None and len(rates) > 0:
+                print(f"    el bróker solo entregó desde {recorte:%Y.%m.%d}")
+                return rates, recorte
+            time.sleep(15)
+    return None, None
 
 
 def escribir(nombre_tf, rates):
@@ -165,14 +180,15 @@ def main():
             resumen.append(f"{nombre}: omitida (no soportada)")
             continue
         print(f"Descargando {nombre}...")
-        rates = velas(tf, desde, hasta)
+        rates, desde_real = velas(tf, desde, hasta)
         if rates is None:
             print(f"{nombre}: sin datos")
             resumen.append(f"{nombre}: sin datos")
             continue
         n, mb = escribir(nombre, rates)
         total += n
-        resumen.append(f"{nombre}: {n} velas ({mb:.1f} MB)")
+        cobertura = "" if desde_real == desde else f" (desde {desde_real:%Y.%m.%d})"
+        resumen.append(f"{nombre}: {n} velas ({mb:.1f} MB){cobertura}")
 
     resumen.append(f"total velas: {total}")
     with open(os.path.join(OUT, "resumen.txt"), "w", encoding="utf-8") as f:
